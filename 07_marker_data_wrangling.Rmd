@@ -1,0 +1,557 @@
+---
+title: "marker_data_wrangling"
+author: "Alessio Maggiorelli"
+output: html_document
+---
+
+```{r}
+
+# In this script the *updated* marker data will be filtered and processed for GBLUP later
+
+```
+
+
+
+# Setup
+
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+  
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+```{r packages}
+
+library(data.table)
+library(sommer)
+library(emmeans)
+library(lme4)
+library(openxlsx)
+library(stringr)
+library(tidyverse)
+
+
+```
+
+# Load data 
+
+## Genotype names
+
+
+```{r}
+
+list_1A <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/list_saka_1A.csv",
+                sep = "\n",
+                what = character())
+list_2A <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/list_saka2_A.csv",
+                sep = "\n",
+                what = character())
+list_3A <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/saka_3A.csv",
+                sep = "\n",
+                what = character())
+list_4A <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/saka_4A.csv",
+                sep = "\n",
+                what = character())
+list_5A <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/Saka_5a_list.csv",
+                sep = "",
+                what = character())[-1]
+
+list_5A <- paste(list_5A, collapse = '') %>% 
+  str_split(".CEL") %>% 
+  unlist() %>% 
+  paste0(".CEL") %>% 
+  as.vector() %>% .[-92]
+
+
+
+
+
+list_1B <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/saka_1b.csv",
+                sep = "\n",
+                what = character())
+list_2B <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/saka_2b.csv",
+                sep = "\n",
+                what = character())
+list_3B <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/saka_3b.csv",
+                sep = "\n",
+                what = character())
+list_4B <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/saka_4b.csv",
+                sep = "\n",
+                what = character())
+list_5B <- scan("../../data/Data_Alessio_Axiom_21PT950_array/Saka_list/Saka_5b_list.csv",
+                sep = "",
+                what = character())
+
+list_5B <- paste(list_5B, collapse = '') %>% 
+  str_split(".CEL") %>% 
+  unlist() %>% 
+  paste0(".CEL") %>% 
+  as.vector() %>% .[-92]
+
+
+list_A <- c(list_1A,
+            list_2A,
+            list_3A,
+            list_4A,
+            list_5A)
+
+
+list_B <- c(list_1B,
+            list_2B,
+            list_3B,
+            list_4B,
+            list_5B)
+
+
+
+genotype_names_SAKA <- c(make.names(union(list_A, list_B)),
+                         "X220209_Axiom_21PT950_A.96_Verdi_05_C12.CEL",
+                         "X220321_Axiom_21PT950_A.96_Eurogrande.01.C03.CEL",
+                         "X220321_Axiom_21PT950_A.96_Belana.01.B03.CEL",
+                         "X220411_Axiom_21PT950_A.96_Solist.04.A10.CEL",
+                         "X220411_Axiom_21PT950_A.96_LRosetta.04.B12.CEL",
+                         "X220411_Axiom_21PT950_A.96_Innovator.04.A12.CEL",
+                         "X220321_Axiom_21PT950_A.96_Jelly.01.D03.CEL",
+                         "X220209_Axiom_21PT950_A.96_Agria.Stich_05_E01.CEL",
+                         "X220322_Axiom_21PT950_B.96_Jelly.01.D03.CEL",
+                         "X220209_Axiom_21PT950_B.96_Verdi_05_C12.CEL",
+                         "X220322_Axiom_21PT950_B.96_Eurogrande.01.C03.CEL",
+                         "X220322_Axiom_21PT950_B.96_Belana.01.B03.CEL",
+                         "X220411_Axiom_21PT950_B.96_Solist.04.A10.CEL",
+                         "X220411_Axiom_21PT950_B.96_LRosetta.04.B12.CEL",
+                         "X220411_Axiom_21PT950_B.96_Innovator.04.A12.CEL",
+                         "X220209_Axiom_21PT950_B.96_Agria.Stich_05_E01.CEL")
+                         
+                         
+                         
+                         
+
+
+rm(list = c("list_1B",
+            "list_2B",
+            "list_3B",
+            "list_4B",
+            "list_5B",
+            "list_1A",
+            "list_2A",
+            "list_3A",
+            "list_4A",
+            "list_5A",
+            "list_A",
+            "list_B"))
+
+```
+
+
+
+
+
+## Marker data
+
+```{r}
+
+ARRAY_A_tet <- read.csv("../../data/Data_Alessio_Axiom_21PT950_array/Updated_calls/tetraploid_diploids/Array_A/No_controls_calls_all_chrs_tetraploids.csv",
+                        header = TRUE,
+                        sep = "\t")
+
+ARRAY_B_tet <- read.csv("../../data/Data_Alessio_Axiom_21PT950_array/Updated_calls/tetraploid_diploids/Array_B/No_controls_calls_all_chrs_tetraploids.csv",
+                        header = TRUE,
+                        sep = "\t")
+
+
+
+ARRAY_A_tet[1:5,1:5]
+ARRAY_B_tet[1:5,1:5]
+
+```
+
+
+```{r}
+
+
+# prefilter the marker data of both arrays to only conserve the columns (genotypes) that come from SAKA and also all checks
+
+ncol(ARRAY_B_tet)
+names(ARRAY_A_tet)
+# names(ARRAY_B_tet)
+
+ARRAY_A_tet <- ARRAY_A_tet %>% 
+  dplyr::select(probeset_id,
+                any_of(genotype_names_SAKA))
+
+ARRAY_B_tet <- ARRAY_B_tet %>% 
+  dplyr::select(probeset_id,
+                any_of(genotype_names_SAKA))
+
+
+# genotype name string operation for better readability and so that the names are unified for joining later
+
+names(ARRAY_A_tet) <- gsub(names(ARRAY_A_tet),
+                           pattern = "X[0-9]{6}_",
+                           replacement = "") %>% 
+                      gsub(names(ARRAY_A_tet),
+                           pattern = "950_[A-B].",
+                           replacement = "950_")
+
+
+names(ARRAY_B_tet) <- gsub(names(ARRAY_B_tet),
+                           pattern = "X[0-9]{6}_",
+                           replacement = "") %>% 
+                      gsub(names(ARRAY_B_tet),
+                           pattern = "950_[A-B].",
+                           replacement = "950_")
+  
+
+
+
+names(ARRAY_B_tet)[!names(ARRAY_B_tet) %in% names(ARRAY_A_tet)]
+names(ARRAY_A_tet)[!names(ARRAY_A_tet) %in% names(ARRAY_B_tet)]
+
+ncol(ARRAY_B_tet);ncol(ARRAY_A_tet)
+
+ARRAY_B_tet$probeset_id %in% ARRAY_A_tet$probeset_id
+ARRAY_A_tet$probeset_id %in% ARRAY_B_tet$probeset_id
+
+
+ARRAY_A_tet <- ARRAY_A_tet %>% 
+  dplyr::select(-any_of(names(ARRAY_A_tet)[!names(ARRAY_A_tet) %in% names(ARRAY_B_tet)]))
+
+
+ARRAY_B_tet$probeset_id[ARRAY_B_tet$probeset_id %in% ARRAY_A_tet$probeset_id]
+ARRAY_A_tet$probeset_id[ARRAY_A_tet$probeset_id %in% ARRAY_B_tet$probeset_id]
+
+length(ARRAY_B_tet$probeset_id)
+length(ARRAY_A_tet$probeset_id)
+
+
+```
+
+```{r}
+# unify both arrays
+
+
+marker_df <- bind_rows(ARRAY_A_tet,
+                         ARRAY_B_tet)
+  
+
+```
+
+
+```{r}
+# load in PT data to translate the genotype names
+PT_data_WIN21_mfr <- read.csv("../../data/Phenotyping/rawdata/2021/KE_BL(WIN--2021-PotatoTools_mfrmsp--null)_2022_01_19--12-11.csv", sep = ";", stringsAsFactors = F)
+PT_data_WIN21_sfr <- read.csv("../../data/Phenotyping/rawdata/2021/KE_BL(WIN--2021-PotatoTools_sfrfr--null)_2022_01_19--11-56.csv", sep = ";", stringsAsFactors = F)
+
+PT_data_GRAN21_mfr <- read.csv("../../data/Phenotyping/rawdata/2021/KE_BL(GRA--2021-PotatoTools_mfrmsp--null)_2022_01_19--21-50.csv", sep = ";", stringsAsFactors = F)
+PT_data_GRAN21_sfr <- read.csv("../../data/Phenotyping/rawdata/2021/KE_BL(WIN--2021-PotatoTools_sfrfr--null)_2022_01_19--11-56.csv", sep = ";", stringsAsFactors = F)
+
+
+code_list_WIN21 <- PT_data_WIN21_mfr %>% 
+  dplyr::mutate(code_name = PT_data_WIN21_mfr$Material %>% 
+  str_extract("(?<=SL19-).*")) %>% 
+  dplyr::select(Material, code_name) %>% 
+  filter(Material != "",
+         !Material %in% c("Fuell1",
+                         "Fuell2",
+                         "Fuell3"),
+         !is.na(code_name)) %>% 
+  bind_rows(
+    PT_data_WIN21_sfr %>% 
+      dplyr::mutate(code_name = PT_data_WIN21_sfr$Material %>% 
+      str_extract("(?<=SL19-).*")) %>% 
+      dplyr::select(Material, code_name) %>% 
+      filter(Material != "",
+         !Material %in% c("Fuell1",
+                         "Fuell2",
+                         "Fuell3"),
+         !is.na(code_name))
+  )
+
+
+
+code_list_GRAN21 <- PT_data_GRAN21_mfr %>% 
+  dplyr::mutate(code_name = PT_data_GRAN21_mfr$Material %>% 
+  str_extract("(?<=SL19-).*")) %>% 
+  dplyr::select(Material, code_name) %>% 
+  filter(Material != "",
+         !Material %in% c("Fuell1",
+                         "Fuell2",
+                         "Fuell3"),
+         !is.na(code_name)) %>% 
+  bind_rows(
+    PT_data_GRAN21_sfr %>% 
+      dplyr::mutate(code_name = PT_data_GRAN21_sfr$Material %>% 
+      str_extract("(?<=SL19-).*")) %>% 
+      dplyr::select(Material, code_name) %>% 
+      filter(Material != "",
+         !Material %in% c("Fuell1",
+                         "Fuell2",
+                         "Fuell3"),
+         !is.na(code_name))
+  )
+
+
+code_list_GRAN21$Material %in% code_list_WIN21$Material # GRAN and WIN have the same genotype materials
+
+code_list_21 <- code_list_WIN21
+
+
+code_list_21 <- add_row(code_list_21, 
+        Material = c("EUROGRANDE",
+                     "JELLY",
+                     "SOLIST",
+                     "INNOVATOR",
+                     "LADY ROSETTA",
+                     "BELANA",
+                     "AGRIA",
+                     "VERDI"), 
+        code_name = c("Eurogrande",
+                      "Jelly",
+                      "Solist",
+                      "Innovator",
+                      "LRosetta",
+                      "Belana",
+                      "Agria.Stich",
+                      "Verdi"))
+
+marker_df$probeset_id %>% duplicated() %>% any() # no duplicated markers
+
+# change the names of the genotypes in the marker dataset
+
+g_names <- names(marker_df) %>% 
+  str_extract("(?<=_96_)(.*?)(?=\\.0)|(?<=_96_)(.*?)(?=_0)")
+
+g_names[1] <- "probeset_id"
+  
+
+names(marker_df) <- g_names
+
+#transpose dataframe
+df2 <- data.frame(t(marker_df[-1]))
+colnames(df2) <- marker_df[, 1]
+marker_df <- df2
+
+code_list_21 <- code_list_21 %>% 
+  dplyr::rename("genotype" = code_name)
+
+df3 <- marker_df %>% 
+  dplyr::mutate(genotype = rownames(marker_df))
+  
+
+df4 <- data.frame(genotype = df3$genotype) %>% 
+  left_join(code_list_21, by = "genotype")
+
+
+marker_df <- marker_df %>% 
+  dplyr::mutate(Material = df4$Material,
+                genotype = df4$genotype) %>% 
+  dplyr::select(genotype,
+                Material,
+                everything())
+
+
+
+```
+
+# Save marker data
+
+```{r}
+
+fwrite(marker_df,
+          file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_updatedCalls.csv")
+
+```
+
+
+# Prepare marker data for GBLUP
+
+```{r}
+
+
+missing_rate <- vector()
+marker_num <- vector()
+
+for(i in 3:ncol(marker_df)){
+  
+  marker_num <- c(marker_num, i)
+  missing_rate <- c(missing_rate, sum(marker_df[,i] == -1)/length(marker_df[,i]))
+  print(i)
+  
+}
+
+
+# missing_rate %>% length()
+# length(marker_df)
+
+
+# every marker that has 20% missing data or more is discarded
+delete_markers <- data.frame(marker_num,
+           missing_rate) %>% 
+  filter(missing_rate >= 0.2) %>% 
+  .$marker_num
+
+marker_df <- marker_df[,-c(delete_markers)]
+length(marker_df)
+
+
+
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+# MAF
+
+MAF <- vector()
+marker_num <- vector()
+for (i in 3:ncol(marker_df)) {
+  
+
+    AF <- (4*sum(marker_df[,i] == 0)+3*sum(marker_df[,i] == 1)+2*sum(marker_df[,i] == 2)+1*sum(marker_df[,i]==3))/(4*sum(marker_df[,i] == 0)+4*sum(marker_df[,i] == 1)+4*sum(marker_df[,i] ==2)+4*sum(marker_df[,i] ==3)+4*sum(marker_df[,i] == 4))
+    
+    MAF <- c(MAF, ifelse(AF < 0.5, AF, 1-AF))
+    marker_num <- c(marker_num, i)
+    
+    if(i %% 10000 == 0){
+    
+    print(i)
+    
+  }
+  
+}
+
+
+# every marker that has 20% missing data or more is discarded
+delete_markers <- data.frame(marker_num,
+           MAF) %>% 
+  filter(MAF < 0.05) %>% 
+  .$marker_num
+
+marker_df <- marker_df[,-c(delete_markers)]
+length(marker_df)
+
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+
+
+# median impute missing markers
+
+for(i in 3:100000){
+  
+  marker_df[,i][marker_df[,i] == -1] <- as.integer(median(marker_df[,i][marker_df[,i] != -1]))
+  if(i %% 1000 == 0){
+    
+    print(i)
+    
+  }
+  
+}
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+
+for(i in 100000:200000){
+  
+  marker_df[,i][marker_df[,i] == -1] <- as.integer(median(marker_df[,i][marker_df[,i] != -1]))
+  if(i %% 1000 == 0){
+    
+    print(i)
+    
+  }
+  
+}
+
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+
+
+for(i in 200000:300000){
+  
+  marker_df[,i][marker_df[,i] == -1] <- as.integer(median(marker_df[,i][marker_df[,i] != -1]))
+  if(i %% 1000 == 0){
+    
+    print(i)
+    
+  }
+  
+}
+
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+
+for(i in 300000:400000){
+  
+  marker_df[,i][marker_df[,i] == -1] <- as.integer(median(marker_df[,i][marker_df[,i] != -1]))
+  if(i %% 1000 == 0){
+    
+    print(i)
+    
+  }
+  
+}
+
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+
+for(i in 400000:500000){
+  
+  marker_df[,i][marker_df[,i] == -1] <- as.integer(median(marker_df[,i][marker_df[,i] != -1]))
+  if(i %% 1000 == 0){
+    
+    print(i)
+    
+  }
+  
+}
+
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+
+
+for(i in 500000:ncol(marker_df)){
+  
+  marker_df[,i][marker_df[,i] == -1] <- as.integer(median(marker_df[,i][marker_df[,i] != -1]))
+  if(i %% 1000 == 0){
+    
+    print(i)
+    
+  }
+  
+}
+
+
+fwrite(marker_df,
+       file = "../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+
+```

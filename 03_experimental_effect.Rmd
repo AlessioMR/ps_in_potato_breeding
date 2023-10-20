@@ -1,0 +1,423 @@
+---
+title: "Remove experimental effect"
+author: "Alessio Maggiorelli"
+output: pdf_document
+---
+
+```{r script description}
+
+# The phenotype data for 2021 is divided into two maturity groups: extra early + early and medium early + medium late. In this script I calculate the experiment effect of this separation for all traits and correct the phenotype data accordingly
+
+```
+
+
+# PT exp efect
+
+## Setup
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+  
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+  
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+
+```{r packages}
+
+library(sommer)
+library(emmeans)
+library(lme4)
+library(openxlsx)
+library(stringr)
+library(tidyverse)
+library(RLRsim)
+
+```
+
+
+### Load data
+
+```{r load data}
+
+# phenotype data
+PT_data <- read.csv(file = "../../data/PT_cleaneddata_AM.csv")
+
+# let the block numbers for the two adjusted maturity groups be different (eliminates the need for nesting)
+PT_data <- PT_data %>% 
+  dplyr::mutate(Block = as.integer(Block)) %>% 
+  dplyr::mutate(Block = case_when(Reife == "sfrfr" ~ Block + as.integer(5),
+                                   TRUE ~ Block)) %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reife, Reihe, Beet, env_com), as.factor)) 
+
+ 
+
+
+
+```
+
+### Preliminary data  wrangling
+
+```{r}
+
+#Filter out the 2021 PT data since that was the year where maturity groups were noted in the dataand also only the checks to build the model
+
+PT_data21 <- PT_data %>% 
+  filter(year == "2021" & G %in% c("AGRIA", 
+                                   "BELANA", 
+                                   "EUROGRANDE", 
+                                   "INNOVATOR", 
+                                   "JELLY", 
+                                   "LADY ROSETTA", 
+                                   "SOLIST", 
+                                   "VERDI"))
+
+
+PT_data21_WIN <- PT_data21 %>% 
+  filter(env_com == "WIN2021")
+
+PT_data21_GRAN <- PT_data21 %>% 
+  filter(env_com == "GRAN2021")
+
+
+```
+
+
+
+## Model selection
+
+```{r}
+
+# This is how it works:
+
+# # the null model, the model without the random effect we want to test
+# m0 <- lmer(RFE ~ Reife + (1|G) + (1|Block) + (1|Reihe), PT_data21_WIN)
+# 
+# # the alternative model, the model with the random effect we want to test
+# mA <- lmer(RFE ~ Reife + (1|G) + (1|Block) + (1|Reihe) + (1|Block:Beet), PT_data21_WIN)
+# 
+# # the m model, the model with all fixed effects and just the random effect being tested.
+# m  <- lmer(RFE ~ Reife + (1|Block:Beet), PT_data21_WIN)
+# 
+# # summary(m0)
+# # summary(mA)
+# # summary(m)
+# 
+# # if the p-value is significant that provides us with evidence that the variance of the random effect we test (Beet) is different from zero. That would mean we incorporate the random Beet effect.
+# exactRLRT(m0 = m0, 
+#           mA = mA,
+#           m = m)$p.value
+
+
+
+
+traits <- c("AUF",
+            "AUG",
+            "EIN",
+            "ENT",
+            "ENT.II",
+            "ERT_adj",
+            "FORM.L",
+            "FORM.Q",
+            "GRA",
+            "KNG",
+            "RFE",
+            "RHI",
+            "SCH",
+            "SCO",
+            "STAE",
+            "PPO",
+            "SFL",
+            "KON",
+            "GES",
+            "WR",
+            #"U.pop",
+            "U.pop_root",
+            "N.pop",
+            "UE.pop")
+
+
+# loop through all traits and test for the significance of the Beet effect. Build an instruction dataframe
+
+p_WIN_vector <- vector()
+p_GRAN_vector <- vector()
+p_WIN <- "reset"
+p_GRAN <- "reset"
+
+for(i in 1:length(traits)){
+  
+  tryCatch({
+  
+    # the null model, the model without the random effect we want to test
+    m0 <- lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe), PT_data21_WIN)
+
+    # the alternative model, the model with the random effect we want to test
+    mA <- lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe) + (1|Block:Beet), PT_data21_WIN)
+
+    # the m model, the model with all fixed effects and just the random effect being tested.
+    m  <- lmer(get(traits[i]) ~ Reife + (1|Block:Beet), PT_data21_WIN)
+
+    tryCatch({
+
+      p_WIN <- exactRLRT(m0 = m0,
+                mA = mA,
+                m = m)$p.value
+
+    }, error=function(e){})
+
+    tryCatch({
+    
+      if(is.character(p_WIN)){
+  
+        p_WIN <- 1
+  
+      }
+      
+    }, error=function(e){})
+
+    p_WIN_vector <- c(p_WIN_vector, p_WIN)
+
+    p_WIN <- "reset"
+    
+    rm(m0, mA, m)
+
+    tryCatch({
+    
+      # the null model, the model without the random effect we want to test
+      m0 <- lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe), PT_data21_GRAN)
+  
+      # the alternative model, the model with the random effect we want to test
+      mA <- lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe) + (1|Block:Beet), PT_data21_GRAN)
+  
+      # the m model, the model with all fixed effects and just the random effect being tested.
+      m  <- lmer(get(traits[i]) ~ Reife + (1|Block:Beet), PT_data21_GRAN)
+    
+    }, error=function(e){})
+  
+    
+    tryCatch({
+
+    
+      p_GRAN <- exactRLRT(m0 = m0, 
+                  mA = mA,
+                  m = m)$p.value
+        
+
+    }, error=function(e){})
+      
+    tryCatch({
+    
+      if(is.character(p_GRAN)){
+        
+        p_GRAN <- 1
+        
+      }
+      
+    }, error=function(e){})
+    
+    p_GRAN_vector <- c(p_GRAN_vector, p_GRAN)
+    
+    p_GRAN <- "reset"
+    
+    rm(m0, mA, m)
+    
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+  print(traits[i])
+  print(i)
+  
+}
+
+model_instruction_df <- data.frame(trait = traits,
+                 p_WIN = p_WIN_vector,
+                 p_GRAN = p_GRAN_vector) %>% 
+  dplyr::mutate(include_Beet_WIN = case_when(p_WIN > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE)) %>% 
+  dplyr::mutate(include_Beet_GRAN = case_when(p_GRAN > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE))
+
+
+
+```
+
+
+
+
+
+## Determining experiment effect
+
+### WIN2021
+
+```{r}
+# https://link.springer.com/article/10.1007/s00122-016-2674-6
+# modelling has been done like in the paper above:
+# per environment
+# only for the checks and set as random
+# random Block effect
+
+
+
+
+fit_list_WIN <- list()
+
+for(i in 1:length(traits)){
+  
+  print(i)
+  
+  tryCatch({
+  
+    if(model_instruction_df$include_Beet_WIN[i]){
+      
+      fit_list_WIN[[i]] <- summary(lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe) + (1|Block:Beet), PT_data21_WIN))
+      print("with")
+    
+    } else {
+      
+      fit_list_WIN[[i]] <- summary(lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe), PT_data21_WIN))
+      print("without")
+      
+    }
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+}
+
+
+
+sfrfr_add_WIN <- vector()
+
+for (ii in fit_list_WIN) {
+  
+  if(is.null(ii)){
+    
+    print("empty")
+    sfrfr_add_WIN <- c(sfrfr_add_WIN, 0)
+    
+  } else {
+    
+    sfrfr_add_WIN <- c(sfrfr_add_WIN, ii$coefficients[2,1])
+    
+  }
+  
+}
+
+
+
+```
+
+
+
+### GRAN2021
+
+```{r}
+
+fit_list_GRAN <- list()
+
+for(i in 1:length(traits)){
+  
+  print(i)
+  
+  tryCatch({
+  
+    if(model_instruction_df$include_Beet_GRAN[i]){
+      
+      fit_list_GRAN[[i]] <- summary(lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe) + (1|Block:Beet), PT_data21_GRAN))
+      print("with")
+    
+    } else {
+      
+      fit_list_GRAN[[i]] <- summary(lmer(get(traits[i]) ~ Reife + (1|G) + (1|Block) + (1|Reihe), PT_data21_GRAN))
+      print("without")
+      
+    }
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+}
+
+
+
+sfrfr_add_GRAN <- vector()
+
+for (ii in fit_list_GRAN) {
+  
+  if(is.null(ii)){
+    
+    print("empty")
+    sfrfr_add_GRAN <- c(sfrfr_add_GRAN, 0)
+    
+  } else {
+    
+    sfrfr_add_GRAN <- c(sfrfr_add_GRAN, ii$coefficients[2,1])
+    
+  }
+  
+}
+
+
+
+```
+
+
+## Adjust data
+
+
+```{r}
+
+
+experimental_effect_df <- data.frame(trait = traits, 
+                                     sfrfr_add_WIN,
+                                     sfrfr_add_GRAN)
+
+
+
+PT_data_adjexp <- PT_data %>% 
+  dplyr::mutate(across(traits, as.numeric)) %>% 
+  dplyr::mutate(across(traits, 
+    ~ case_when(Reife == "sfrfr" & env_com == "WIN2021" ~ 
+                 . - experimental_effect_df[experimental_effect_df$trait == cur_column(),]$sfrfr_add_WIN,
+                Reife == "sfrfr" & env_com == "GRAN2021" ~ 
+                 . - experimental_effect_df[experimental_effect_df$trait == cur_column(),]$sfrfr_add_GRAN,
+                TRUE ~ .)))
+
+
+# code chunk to check
+# PT_data %>%
+#   filter(env_com == "WIN2021") %>%
+#   group_by(Reife) %>%
+#   summarise(mean = mean(ERT_adj, na.rm = T))
+# 
+# PT_data_adjexp %>% 
+#   filter(env_com == "WIN2021") %>%
+#   group_by(Reife) %>%
+#   summarise(mean = mean(ERT_adj, na.rm = T))
+
+
+PT_data_adjexp <- PT_data_adjexp %>% 
+  dplyr::mutate(Reife = case_when(Reife == "sfrfr" ~ "sfrfr_adj",
+                                  TRUE ~ as.character(Reife)))
+
+```
+
+
+## Save new dataset
+
+```{r}
+
+write.csv(PT_data_adjexp, "../../data/PT_cleaneddata_expadj_AM.csv")
+
+```
+
+

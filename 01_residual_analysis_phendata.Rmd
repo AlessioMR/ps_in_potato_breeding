@@ -1,0 +1,1253 @@
+---
+title: "Residual_analysis_phendata"
+author: "Alessio Maggiorelli"
+output: html_document
+---
+
+
+
+# Setup
+
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+  
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+  
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+
+
+
+```{r packages}
+
+library(tidyverse)
+library(janitor)
+library(stringr)
+library(readxl)
+library(lme4)
+library(Rcpp)
+library(ordinal)
+
+
+```
+
+
+# Data
+
+```{r}
+
+data19 <- read_csv(file = "../../data/Phenotyping/Saka_2019_PT_MAA.csv")
+data20 <- read_csv(file = "../../data/Phenotyping/Saka_2020_PT_MAA.csv")
+data21 <- read.csv(file = "../../data/Phenotyping/Saka_2021_PT_MAA.csv")
+
+names(data20) %in% names(data21)
+
+#row bind the dataframes
+
+data <- rbind(data19, data20, data21)
+
+```
+
+```{r data_preparation}
+
+# lets code a new column with the combination of year x location as a single environment variable
+
+data <- data %>% 
+  mutate(env_com = paste0(loc, year)) %>% 
+  rename("G" = Genotype.Number) %>% 
+  mutate(Reife = as.character(Reife)) %>% 
+  mutate(Reife = replace_na(Reife, "unknown")) %>% 
+  # Fuel plants are filtered out of the data set
+  filter(!str_detect(G, "^*.?Fuel")) %>% 
+  # Yield (ERT) needs to be adjusted to the number of plants per plot
+  mutate(ERT_adj = case_when(year == 2019 ~ ERT/(10-FST),
+                             year == 2020 ~ ERT/(16-FST),
+                             year == 2021 ~ ERT/(16-FST),
+                             TRUE ~ NA_real_)) %>% 
+  mutate(HH = case_when(HH > 9 ~ NA_real_,
+                        TRUE ~ HH)) %>% 
+  dplyr::mutate(across(ENV:Beet, as.factor))
+  
+
+```
+
+```{r modelling setup}
+
+
+traits <- data %>% 
+  dplyr::select(-(ENV:EDAT),
+         - env_com,
+         - Reife,
+         - BLUE, 
+         - U,
+         - N,
+         - UE, 
+         - FLE, 
+         - SCHF, 
+         - KTYP, 
+         - CHI.4, 
+         - CHI.8,
+         - POM, 
+         - FST,
+         - ERT
+         ) %>%  
+  names()
+         
+
+#Define a list where models for all traits will be stored
+fit_list <- list()
+
+
+
+```
+
+# Modelling
+
+```{r modelling}
+
+
+for (i in 1:length(traits)) {
+  
+  fit_list[[i]] <- lmer( get(traits[i]) ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Row) + (1|env_com:Column), data = data)
+  print(i)
+
+}
+
+
+# change the names of the list
+names(fit_list) <- traits
+
+
+```
+
+# Visualising Residuals
+
+```{r create direct residual plots}
+
+res_plot_list <- list()
+
+for(ii in 1:length(traits)){
+  
+  res_plot_list[[ii]] <- plot(fit_list[[ii]],
+       ylab = paste0(traits[[ii]], " residual"))
+  
+}
+
+res_plot_list
+
+
+
+```
+
+```{r create residual plots w/ colorcoding}
+
+model_data <- list()
+
+for (i in 1:length(fit_list)) {
+  model_data[[i]] <- fit_list[[i]]@frame %>% 
+    mutate(fitted = fitted(fit_list[[i]]),
+         residuals = resid(fit_list[[i]]))
+}
+
+
+names(model_data) <- traits
+
+
+res_plot_list <- list()
+
+for(ii in 1:length(traits)){
+  
+  res_plot_list[[ii]] <- ggplot(model_data[[ii]]) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0(traits[[ii]], " residuals"))
+  
+}
+
+
+res_plot_list
+
+
+```
+
+# Residuals
+
+## ERT_adj
+
+```{r}
+
+ggplot(data) + 
+  geom_boxplot(aes(env_com, ERT_adj))
+
+ggsave(filename = "../results/boxplot_of_single_plant_yield_alltrials.png", width = 30, height = 30/1.577778, units = "cm")
+
+
+
+```
+
+
+
+
+```{r}
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["ERT_adj"]] %>% 
+  filter(residuals > 0.4 | residuals < -0.40) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(ERT_adj = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ ERT_adj)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(ERT_adj ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("ERT_adj", " residuals"))
+
+
+
+```
+
+## AUF
+
+```{r RES correction, AUF}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["AUF"]] %>% 
+  filter(residuals > 1.5 | residuals < -1.5) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(AUF = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ AUF)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(AUF ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("AUF", " residuals"))
+
+
+
+```
+
+## AUG
+
+```{r RES correction, AUG}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["AUG"]] %>% 
+  filter(residuals > 1 | residuals < -1) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(AUG = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ AUG)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(AUG ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("AUG", " residuals"))
+
+
+
+```
+
+## EIN
+
+```{r RES correction, EIN}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["EIN"]] %>% 
+  filter(fitted < 4.1) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(EIN = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ EIN)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(EIN ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("EIN", " residuals"))
+
+```
+
+## ENT
+
+```{r RES correction, ENT}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["ENT"]] %>% 
+  filter(residuals > 1.25 | residuals < -1.25) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(ENT = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ ENT)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(ENT ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("ENT", " residuals"))
+
+
+###### SECOND ITERATION
+
+
+model_data[["ENT"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = ENT)
+
+
+data <- model_data[["ENT"]] %>% 
+  filter(residuals > 1.25 | residuals < -1.25) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(ENT = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ ENT)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(ENT ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("ENT", " residuals"))
+
+
+
+```
+
+## ENT.II
+
+```{r RES correction, ENT.II}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["ENT.II"]] %>% 
+  filter(residuals > 1.25 | residuals < -1.25) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(ENT.II = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ ENT.II)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(ENT.II ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("ENT.II", " residuals"))
+
+
+
+```
+
+## FORM.L
+
+```{r RES correction, FORM.L}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["FORM.L"]] %>% 
+  filter(residuals > 1.25 | residuals < -1.25) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(FORM.L = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ FORM.L)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(FORM.L ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("FORM.L", " residuals"))
+
+
+
+```
+
+## FORM.Q
+
+```{r RES correction, FORM.Q}
+
+
+```
+
+## KNG
+
+```{r RES correction, KNG looks fine}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["KNG"]] %>% 
+  filter(residuals > 1.25 | residuals < -1.25) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(KNG = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ KNG)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(KNG ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("KNG", " residuals"))
+
+
+
+```
+
+## RFE
+
+```{r RES correction, RFE}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["RFE"]] %>% 
+  filter(residuals > 1.25 | residuals < -1.25) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(RFE = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ RFE)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(RFE ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("RFE", " residuals"))
+
+
+
+```
+
+## RHI
+
+```{r RES correction, RHI}
+
+# RHI
+
+
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["RHI"]] %>% 
+  filter(residuals > 2 | residuals < -2.5) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(RHI = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ RHI)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(RHI ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("RHI", " residuals"))
+
+
+
+```
+
+## SCH
+
+```{r RES correction, SCH}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["SCH"]] %>% 
+  filter(residuals > 1.25 | residuals < -1.25 | fitted > 6 ) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(SCH = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ SCH)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(SCH ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("SCH", " residuals"))
+
+
+
+###### SECOND ITERATION
+
+
+model_data[["SCH"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = SCH)
+
+
+data <- model_data[["SCH"]] %>% 
+  filter(residuals > 1 | residuals < -1) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(SCH = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ SCH)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(SCH ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("SCH", " residuals"))
+
+
+
+```
+
+## SCO
+
+```{r RES correction, SCO}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["SCO"]] %>% 
+  filter(fitted < 1.75 | residuals < -2) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(SCO = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ SCO)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(SCO ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("SCO", " residuals"))
+
+
+###### SECOND ITERATION
+
+
+model_data[["SCO"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = SCO)
+
+
+data <- model_data[["SCO"]] %>% 
+  filter(residuals > 1.5) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(SCO = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ SCO)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(SCO ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("SCO", " residuals"))
+
+
+```
+
+## STAE
+
+```{r RES correction, STAE}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["STAE"]] %>% 
+  filter(residuals > 1.5 | residuals < -1.5) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(STAE = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ STAE)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(STAE ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("STAE", " residuals"))
+
+
+ggplot(model_data[["STAE"]] %>% dplyr::rename("ENV" = env_com)) + 
+  geom_point(aes(fitted, residuals, colour = ENV), size = 4) +
+  theme_minimal() +
+  ylab(paste0("residuals")) +
+  labs(title = paste0("Residual plot of starch content")) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(text = element_text(size = 18)) 
+  
+
+```
+
+## PPO
+
+```{r RES correction, PPO}
+
+#-----------------------------------------------------
+ 
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["PPO"]] %>% 
+  filter(residuals > 1.7 | residuals < -1.7) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(PPO = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ PPO)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(PPO ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("PPO", " residuals"))
+
+
+
+```
+
+## SFL
+
+```{r RES correction, SFL}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["SFL"]] %>% 
+  filter(residuals > 30 | residuals < -30) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(SFL = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ SFL)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(SFL ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("SFL", " residuals"))
+
+
+
+###### SECOND ITERATION
+
+
+model_data[["SFL"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = SFL)
+
+
+data <- model_data[["SFL"]] %>% 
+  filter(residuals > 20 | residuals < -20) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(SFL = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ SFL)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(SFL ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("SFL", " residuals"))
+
+
+###### THIRD ITERATION
+
+
+model_data[["SFL"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = SFL)
+
+
+data <- model_data[["SFL"]] %>% 
+  filter(residuals > 15 | residuals < -15) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(SFL = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ SFL)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(SFL ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("SFL", " residuals"))
+
+
+```
+
+## KON
+
+```{r RES correction, KON}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["KON"]] %>% 
+  filter(residuals > 2.5 | residuals < -3.75) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(KON = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ KON)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(KON ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("KON", " residuals"))
+
+
+
+```
+
+## GES
+
+```{r RES correction, GES}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["GES"]] %>% 
+  filter(residuals < -2 | residuals > 2) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(GES = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ GES)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(GES ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("GES", " residuals"))
+
+
+
+###### SECOND ITERATION
+
+
+model_data[["GES"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = GES)
+
+
+data <- model_data[["GES"]] %>% 
+  filter(residuals > 1.5 | residuals < -1.5) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(GES = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ GES)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(GES ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("GES", " residuals"))
+
+
+
+```
+
+## GRA
+
+```{r RES correction, GRA}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["GRA"]] %>% 
+  filter(residuals < -2 | residuals > 2) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(GRA = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ GRA)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(GRA ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("GRA", " residuals"))
+
+
+
+###### SECOND ITERATION
+
+
+model_data[["GRA"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = GRA)
+
+
+data <- model_data[["GRA"]] %>% 
+  filter(residuals > 1.5 | residuals < -1.5) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(GRA = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ GRA)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(GRA ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("GRA", " residuals"))
+
+
+
+###### THIRD ITERATION
+
+
+model_data[["GRA"]] <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model)) %>% 
+  rename(`get(traits[i])` = GRA)
+
+
+data <- model_data[["GRA"]] %>% 
+  filter(residuals > 1 | residuals < -1) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(GRA = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ GRA)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(GRA ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("GRA", " residuals"))
+
+
+
+
+
+```
+
+
+## U.pop
+
+```{r RES correction, U.pop}
+
+# point cloud is skewed
+
+# Maybe here a root transformation helps
+
+data_U.pop <- data %>% 
+  mutate(U.pop_root = sqrt(U.pop))
+
+model <- lmer(U.pop_root ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data_U.pop)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("U.pop_root", " residuals"))
+
+# yes, that is better
+
+# so now, do the root transformation in the real data:
+
+data <- data %>% 
+  mutate(U.pop_root = sqrt(U.pop))
+
+model <- lmer(U.pop_root ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+model_data_U.pop <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+
+data <- model_data_U.pop %>% 
+  filter(residuals > 0.5 | residuals < -0.5) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(U.pop_root = case_when(!is.na(`U.pop_root.x`) ~ NA_real_,
+                             TRUE ~ `U.pop_root.y`)) %>% 
+  dplyr::select(-`U.pop_root.x`, -`U.pop_root.y`) 
+
+# new plot looks like this
+
+model <- lmer(U.pop_root ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("U.pop_root", " residuals"))
+
+# Looks way better
+
+
+```
+
+## N.pop
+
+```{r RES correction, N.pop}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["N.pop"]] %>% 
+  filter(residuals > 20) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(N.pop = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ N.pop)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(N.pop ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("N.pop", " residuals"))
+
+
+
+```
+
+## UE.pop
+
+```{r RES correction, UE.pop}
+
+#-----------------------------------------------------
+
+# cut some values from the dataset based on the residual plot (set to NA)
+
+data <- model_data[["UE.pop"]] %>% 
+  filter(residuals < -20) %>% 
+  dplyr::select(-fitted, -residuals) %>% 
+  right_join(data, by = c("G", "env_com", "Reife", "Block")) %>% 
+  mutate(UE.pop = case_when(!is.na(`get(traits[i])`) ~ NA_real_,
+                             TRUE ~ UE.pop)) %>% 
+  dplyr::select(-`get(traits[i])`)
+
+# new plot looks like this
+
+model <- lmer(UE.pop ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+model_data_temp <- model@frame %>% 
+    mutate(fitted = fitted(model),
+         residuals = resid(model))
+ggplot(model_data_temp) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0("UE.pop", " residuals"))
+
+
+
+```
+
+# Modelling Setup 2
+
+```{r modelling setup 2}
+
+traits <- data %>% 
+  dplyr::select(AUF,
+         AUG,
+         EIN,
+         ENT,
+         ENT.II,
+         ERT_adj,
+         FORM.L,
+         FORM.Q,
+         KNG,
+         RFE,
+         RHI,
+         SCH,
+         SCO,
+         STAE,
+         PPO,
+         SFL,
+         KON,
+         GES,
+         GRA,
+         # ZW,
+         #HH,
+         # WR,
+         U.pop,
+         U.pop_root,
+         N.pop,
+         UE.pop) %>%  
+  names()
+
+
+```
+
+```{r}
+
+
+traits <- data %>% 
+  dplyr::select(AUF,
+         AUG,
+         EIN,
+         ENT,
+         ENT.II,
+         ERT_adj,
+         FORM.L,
+         FORM.Q,
+         KNG,
+         RFE,
+         RHI,
+         SCH,
+         SCO,
+         STAE,
+         PPO,
+         SFL,
+         KON,
+         GES,
+         GRA,
+         #ZW,
+         #HH,
+         #WR,
+         U.pop,
+         U.pop_root,
+         N.pop,
+         UE.pop) %>%  
+  names()
+
+
+fit_list2 <- list()
+
+for (i in 1:length(traits)) {
+  
+  fit_list2[[i]] <- lmer( get(traits[i]) ~ G + (1|env_com) + Reife + (1|env_com:G) + (1|env_com:Reife:Block), data = data)
+  print(i)
+
+}
+
+
+
+# change the names of the list
+names(fit_list2) <- traits
+
+
+
+
+```
+
+# Visualising Residuals 2
+
+```{r create residual plots w/ colorcoding 2}
+
+model_data2 <- list()
+
+for (i in 1:length(fit_list2)) {
+  model_data2[[i]] <- fit_list2[[i]]@frame %>% 
+    mutate(fitted = fitted(fit_list2[[i]]),
+         residuals = resid(fit_list2[[i]]))
+}
+
+
+names(model_data2) <- traits
+
+
+res_plot_list2 <- list()
+
+for(ii in 1:length(traits)){
+  
+  res_plot_list2[[ii]] <- ggplot(model_data2[[ii]]) + 
+  geom_point(aes(fitted, residuals, colour = env_com)) +
+  ylab(paste0(traits[[ii]], " residuals"))
+  
+}
+
+
+res_plot_list2
+
+
+```
+
+# QQ-normal plots
+
+```{r create qq plots}
+
+res <- list()
+
+for(i in 1:length(fit_list2)){
+  
+  res[[i]] <- residuals(fit_list2[[i]])
+  
+}
+
+
+for(i in 1:length(res)){
+  
+  qqnorm(res[[i]],
+       ylab = paste0(traits[[i]], " resiudal sample quantiles"))
+  
+}
+
+```
+
+
+# Save corrected data
+
+```{r save dataset}
+
+write.csv(data, "../../data/PT_cleaneddata_AM.csv")
+
+```
+

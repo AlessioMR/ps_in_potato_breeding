@@ -1,0 +1,995 @@
+---
+title: "PS-BLUP"
+author: "Alessio Maggiorelli"
+output: pdf_document
+---
+
+```{r}
+
+# This script does the GBLUP. 
+
+
+```
+
+
+# Setup
+
+```{r, setup, include=FALSE}
+
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+  
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+```{r packages}
+
+library(data.table)
+library(sommer)
+library(emmeans)
+library(lme4)
+library(openxlsx)
+library(stringr)
+library(tidyverse)
+library(AGHmatrix)
+
+```
+
+
+## Load data
+
+```{r load data}
+
+# phenotype data
+PT_data <- read.csv(file = "../../data/PT_cleaneddata_expadj_AM.csv")
+
+marker_df <- read_csv("../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+dim(marker_df) 
+
+```
+
+
+## Define functions
+
+### UDF GBLUP data wrangler
+
+
+```{r}
+
+# in this scenario predictions will be made based on relationship matrices derived from marker data. For this I rewrite the data wrangler from 08
+
+
+
+##########################################
+###     Data wrangling function V2     ###
+##########################################
+
+# This function works same as the original only it builds a relationship matrix (several options) from the marker data.
+
+
+
+data_wrangling_for_GBLUP <- function(PT_data, trait, H_option, H_option2 = 0, H_option3 = 0){
+  
+  # PT_data = PT_AEM_list_sc1[["PT_WIN19"]]
+  # trait = traits_WIN19[1]
+  # H_option = "A.mat_VanRaden2008"
+  # H_option2 = 0
+  
+
+  # First find matching genotypes in both data sets
+  interG <- intersect(PT_data$G, marker_df$Material)
+  
+  # then filter PT data for matching Genotypes, arrange in G order and mutate the genotype column as a factor
+  PT_data <- PT_data %>% 
+  filter(G %in% interG) %>% 
+  dplyr::arrange(G) %>% 
+  dplyr::mutate(G = as.factor(G))
+  
+  PT_data$G <- droplevels(PT_data$G)
+  
+  rownames(PT_data) <- PT_data$G
+  
+  # Also filter the marker data for matching Genotypes and arrange for the Genotype
+  marker_df_w <- marker_df %>% 
+    filter(Material %in% interG) %>% 
+    dplyr::arrange(Material)  
+  
+  
+  # Convert marker data as matrix
+  marker_df_w <- marker_df_w %>% 
+  dplyr::select(-genotype, -Material) %>% 
+  as.matrix()
+  
+  # Rename column names to Genotype names for the marker matrix
+  rownames(marker_df_w) <- PT_data$G
+  
+  # Calculate relationship matrix
+  if(H_option == "standard"){
+    
+    H <- (marker_df_w%*%t(marker_df_w))/ncol(marker_df_w)
+    
+  }
+  
+  if(H_option == "A.mat_VanRaden2008"){H <- AGHmatrix::Gmatrix(marker_df_w,
+                                                               method="VanRaden",
+                                                               ploidy=4)}
+  
+  if(H_option == "D.mat_Endelmann2018"){H <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                method="Endelman", 
+                                                                ploidy=4)}
+  
+  if(H_option == "Fullauto.mat_Slater2016"){H <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="Slater", 
+                                                                    ploidy=4)}
+  
+  if(H_option == "Pseudodi.mat_Slater2016"){H <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="VanRaden", 
+                                                                    ploidy=4,
+                                                                    pseudo.diploid = TRUE)}
+  
+  
+  # Rename column and rownames of the relationship matrix to the Genotypes
+  colnames(H) <- PT_data$G
+  rownames(H) <- PT_data$G
+  
+  if(H_option2 != 0){
+    
+    if(H_option2 == "standard"){
+    
+    H2 <- (marker_df_w%*%t(marker_df_w))/ncol(marker_df_w)
+    
+    }
+  
+    if(H_option2 == "A.mat_VanRaden2008"){H2 <- AGHmatrix::Gmatrix(marker_df_w,
+                                                               method="VanRaden",
+                                                               ploidy=4)}
+  
+    if(H_option2 == "D.mat_Endelmann2018"){H2 <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                method="Endelman", 
+                                                                ploidy=4)}
+  
+    if(H_option2 == "Fullauto.mat_Slater2016"){H2 <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="Slater", 
+                                                                    ploidy=4)}
+  
+    if(H_option2 == "Pseudodi.mat_Slater2016"){H2 <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="VanRaden", 
+                                                                    ploidy=4,
+                                                                    pseudo.diploid = TRUE)}
+  
+
+  
+    colnames(H2) <- PT_data$G
+    rownames(H2) <- PT_data$G
+    
+  } else {
+    
+    H2 <- "empty"
+    
+  }
+  
+  if(H_option3 != 0){
+    
+    if(H_option3 == "standard"){
+    
+    H3 <- (marker_df_w%*%t(marker_df_w))/ncol(marker_df_w)
+    
+    }
+  
+    if(H_option3 == "A.mat_VanRaden2008"){H3 <- AGHmatrix::Gmatrix(marker_df_w,
+                                                               method="VanRaden",
+                                                               ploidy=4)}
+  
+    if(H_option3 == "D.mat_Endelmann2018"){H3 <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                method="Endelman", 
+                                                                ploidy=4)}
+  
+    if(H_option3 == "Fullauto.mat_Slater2016"){H3 <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="Slater", 
+                                                                    ploidy=4)}
+  
+    if(H_option3 == "Pseudodi.mat_Slater2016"){H3 <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="VanRaden", 
+                                                                    ploidy=4,
+                                                                    pseudo.diploid = TRUE)}
+  
+
+  
+    colnames(H3) <- PT_data$G
+    rownames(H3) <- PT_data$G
+    
+  } else {
+    
+    H3 <- "empty"
+    
+  }
+  
+  
+  
+  wrangled_data <- list(PT_data = PT_data,
+                        marker_df_matrix = marker_df_w,
+                        H = H, 
+                        trait_column = PT_data[,trait],
+                        H2 = H2,
+                        H3 = H3)
+  
+  #H[1:5,1:5]
+  
+  return(wrangled_data)
+  
+}
+
+
+```
+
+
+### GBLUP with cross-validation
+
+```{r UDF GBLUP with cross-validation}
+##########################################
+### X fold cross-validation function   ###
+##########################################
+
+# This function computes the GBlup with cross validation. The number of folds and repititions are adjustable.
+
+
+cv <- function(phenotype_data, trait, H_data, folds = 5, relationship_matrix, repeats = 25, 
+               relationship_matrix2 = 0,
+               relationship_matrix3 = 0,
+               relationship_matrix4 = 0,
+               relationship_matrix5 = 0,
+               tolPar_threshold = 1e-3){
+
+  
+  # phenotype_data = df$PT_data
+  # H_data = df$H_matrix
+  # folds = 5
+  # relationship_matrix = df$H
+  # trait = df$trait_column
+  # repeats = 25
+  # 
+  # create a new correlation object where every correlation result of the folds x repitition cv will be stored
+  cor1 <- NULL
+  
+  if(!is.matrix(relationship_matrix2) & !is.matrix(relationship_matrix3) & !is.matrix(relationship_matrix4) & !is.matrix(relationship_matrix5)){
+  print("one")
+      # For every repeat:
+  for(r in 1:repeats){
+    
+    # r = 1
+    
+    # Set a new seed (reproducible sets) and split the data into 5 equal folds
+    set.seed(r)
+    set_in_random_order <- sample(H_data %>% nrow(), replace = FALSE)
+    sets <- split(set_in_random_order, cut(seq_along(set_in_random_order), folds, labels = FALSE))
+
+    # For every fold
+    for (i in 1:folds) {
+      
+      # i = 2
+      
+      # Reset the PT data
+      PT_dataset <- phenotype_data
+      
+      # Set the values for the IDs of the training column to NA (to be predicted)
+      train_column <- trait
+      train_column[sets[[i]]] <- NA
+      
+      # append the training column to the data
+      PT_dataset <- cbind(PT_dataset, train_column)
+
+      fit <- mmer(fixed = train_column ~ 1,
+                  random = ~vsr(G, Gu = relationship_matrix),
+                  rcov = ~vsr(units),
+                  data = PT_dataset, verbose = F,
+                  date.warning = FALSE,
+                  tolParInv = tolPar_threshold)
+      
+      # Calculate the estimated breeding values
+      GEBVs <- fit$Beta$Estimate + fit$U$`u:G`$train_column
+      validation_set_index <- match(phenotype_data$G[sets[[i]]], names(GEBVs))
+      
+      # calculate the correlation between the GEBVs and the predictions of the training column
+      cor1 <- c(cor1, cor(trait[sets[[i]]], GEBVs[validation_set_index], use = "pairwise.complete.obs"))
+    
+      }
+    
+    print(paste("Repeat", r))
+    
+    }
+    
+  } 
+  
+  if(is.matrix(relationship_matrix2) & !is.matrix(relationship_matrix3) & !is.matrix(relationship_matrix4) & !is.matrix(relationship_matrix5)){
+    print("two")
+    # For every repeat:
+    for(r in 1:repeats){
+    
+    # r = 1
+    
+    # Set a new seed (reproducible sets) and split the data into 5 equal folds
+    set.seed(r)
+    set_in_random_order <- sample(H_data %>% nrow(), replace = FALSE)
+    sets <- split(set_in_random_order, cut(seq_along(set_in_random_order), folds, labels = FALSE))
+
+    # For every fold
+    for (i in 1:folds) {
+      
+      # i = 2
+      
+      # Reset the PT data
+      PT_dataset <- phenotype_data
+      
+      # Set the values for the IDs of the training column to NA (to be predicted)
+      train_column <- trait
+      train_column[sets[[i]]] <- NA
+      
+      PT_dataset2 <- PT_dataset
+      colnames(PT_dataset2) <- paste0(colnames(PT_dataset2), "2")
+      
+      # append the training column to the data
+      PT_dataset <- cbind(PT_dataset, train_column, PT_dataset2)
+      
+      fit <- mmer(fixed = train_column ~ 1,
+                  random = ~vsr(G, Gu = relationship_matrix) + vsr(G2, Gu = relationship_matrix2),
+                  rcov = ~vsr(units),
+                  data = PT_dataset, verbose = F,
+                  date.warning = FALSE,
+                  tolParInv = tolPar_threshold)
+      
+      # Calculate the estimated breeding values
+      GEBVs <- fit$Beta$Estimate + fit$U$`u:G`$train_column + fit$U$`u:G2`$train_column
+      validation_set_index <- match(phenotype_data$G[sets[[i]]], names(GEBVs))
+      
+      # calculate the correlation between the GEBVs and the predictions of the training column
+      cor1 <- c(cor1, cor(trait[sets[[i]]], GEBVs[validation_set_index], use = "pairwise.complete.obs"))
+    
+      }
+    
+    print(paste("Repeat", r))
+    
+    }
+    
+  }
+  
+  if(is.matrix(relationship_matrix2) & is.matrix(relationship_matrix3) & !is.matrix(relationship_matrix4) & !is.matrix(relationship_matrix5)){
+    print("three")
+    # For every repeat:
+    for(r in 1:repeats){
+    
+    # r = 1
+    
+    # Set a new seed (reproducible sets) and split the data into 5 equal folds
+    set.seed(r)
+    set_in_random_order <- sample(H_data %>% nrow(), replace = FALSE)
+    sets <- split(set_in_random_order, cut(seq_along(set_in_random_order), folds, labels = FALSE))
+
+    # For every fold
+    for (i in 1:folds) {
+      
+      # i = 2
+      
+      # Reset the PT data
+      PT_dataset <- phenotype_data
+      
+      # Set the values for the IDs of the training column to NA (to be predicted)
+      train_column <- trait
+      train_column[sets[[i]]] <- NA
+      
+      PT_dataset2 <- PT_dataset
+      PT_dataset3 <- PT_dataset
+      colnames(PT_dataset2) <- paste0(colnames(PT_dataset2), "2")
+      colnames(PT_dataset3) <- paste0(colnames(PT_dataset3), "3")
+      
+      # append the training column to the data
+      PT_dataset <- cbind(PT_dataset, train_column, PT_dataset2, PT_dataset3)
+
+      fit <- mmer(fixed = train_column ~ 1,
+                  random = ~vsr(G, Gu = relationship_matrix) + vsr(G2, Gu = relationship_matrix2) + vsr(G3, Gu = relationship_matrix3),
+                  rcov = ~vsr(units),
+                  data = PT_dataset, verbose = F,
+                  date.warning = FALSE,
+                  tolParInv = tolPar_threshold)
+      
+      # Calculate the estimated breeding values
+      GEBVs <- fit$Beta$Estimate + fit$U$`u:G`$train_column + fit$U$`u:G2`$train_column + fit$U$`u:G3`$train_column
+      validation_set_index <- match(phenotype_data$G[sets[[i]]], names(GEBVs))
+      
+      # calculate the correlation between the GEBVs and the predictions of the training column
+      cor1 <- c(cor1, cor(trait[sets[[i]]], GEBVs[validation_set_index], use = "pairwise.complete.obs"))
+    
+      }
+    
+    print(paste("Repeat", r))
+    
+    }
+    
+  }
+  
+  # special case with epistatic (6 rel mats in total)
+  
+  if(is.matrix(relationship_matrix2) & is.matrix(relationship_matrix3) & is.matrix(relationship_matrix4) & is.matrix(relationship_matrix5)){
+    print("five")
+    # For every repeat:
+    for(r in 1:repeats){
+    
+    # r = 1
+    
+    # Set a new seed (reproducible sets) and split the data into 5 equal folds
+    set.seed(r)
+    set_in_random_order <- sample(H_data %>% nrow(), replace = FALSE)
+    sets <- split(set_in_random_order, cut(seq_along(set_in_random_order), folds, labels = FALSE))
+
+    # For every fold
+    for (i in 1:folds) {
+      
+      # i = 2
+      
+      # Reset the PT data
+      PT_dataset <- phenotype_data
+      
+      # Set the values for the IDs of the training column to NA (to be predicted)
+      train_column <- trait
+      train_column[sets[[i]]] <- NA
+      
+      PT_dataset2 <- PT_dataset
+      PT_dataset3 <- PT_dataset
+      PT_dataset4 <- PT_dataset
+      PT_dataset5 <- PT_dataset
+      colnames(PT_dataset2) <- paste0(colnames(PT_dataset2), "2")
+      colnames(PT_dataset3) <- paste0(colnames(PT_dataset3), "3")
+      colnames(PT_dataset4) <- paste0(colnames(PT_dataset4), "4")
+      colnames(PT_dataset5) <- paste0(colnames(PT_dataset5), "5")
+      
+      # append the training column to the data
+      PT_dataset <- cbind(PT_dataset, train_column, PT_dataset2, PT_dataset3,
+                          PT_dataset4,
+                          PT_dataset5)
+      
+      # run the H-BLUP; the relationship matrix H is usually calculated beforehand in the function 'data_wrangling_for_cv'
+      fit <- mmer(fixed = train_column ~ 1,
+                  random = ~vsr(G, Gu = relationship_matrix) + vsr(G2, Gu = relationship_matrix2) + vsr(G3, Gu = relationship_matrix3) + vsr(G4, Gu = relationship_matrix4) + vsr(G5, Gu = relationship_matrix5),
+                  rcov = ~vsr(units),
+                  data = PT_dataset, verbose = F,
+                  date.warning = FALSE,
+                  tolParInv = tolPar_threshold)
+      
+      # Calculate the estimated breeding values
+      GEBVs <- fit$Beta$Estimate + fit$U$`u:G`$train_column + fit$U$`u:G2`$train_column + fit$U$`u:G3`$train_column + fit$U$`u:G4`$train_column + fit$U$`u:G5`$train_column
+      validation_set_index <- match(phenotype_data$G[sets[[i]]], names(GEBVs))
+      
+      # calculate the correlation between the GEBVs and the predictions of the training column
+      cor1 <- c(cor1, cor(trait[sets[[i]]], GEBVs[validation_set_index], use = "pairwise.complete.obs"))
+    
+      }
+    
+    print(paste("Repeat", r))
+    
+    }
+    
+  }
+  
+
+  
+ return(cor1)
+  
+}
+
+
+
+```
+
+
+## Wrangle data
+
+```{r data wrangling}
+
+# In this code chunk the data will be molded into data packages for the analysis
+
+# Phenotype data of 2019 WIN
+PT_WIN19 <- PT_data %>% 
+  filter(year == "2019",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2020 WIN
+PT_WIN20 <- PT_data %>% 
+  filter(year == "2020",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2021 WIN
+PT_WIN21 <- PT_data %>% 
+  filter(year == "2021",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2020 GRAN
+PT_GRAN20 <- PT_data %>% 
+  filter(year == "2020",
+         loc == "GRAN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2021 GRAN
+PT_GRAN21 <- PT_data %>% 
+  filter(year == "2021",
+         loc == "GRAN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+
+```
+
+## AEMs
+
+```{r AEMs}
+
+load("../results/AEMs/sc1_PT_AEMs_new.Rda")
+PT_AEM_list_sc1 <- AEM_list_sc1
+load("../results/AEMs/sc1_H_AEMs_new.Rda")
+H_AEM_list_sc1 <- AEM_list_sc1
+load("../results/AEMs/sc3_PT_AEMs_new.Rda")
+
+```
+
+
+## Traits analysed
+
+
+```{r}
+
+# For every PT dataset, depending on the year and location not every trait can be analysed (due to missing trait data)
+
+# In this code chunk we will find analysable trait data for each PT dataset
+
+#-----------------
+
+# These are the sets of all possible traits
+
+traits <- c(
+  "AUF_emmean",
+  "AUG_emmean",
+  "EIN_emmean",
+  "ENT_emmean",
+  "ENT.II_emmean",
+  "ERT_adj_emmean",
+  "FORM.L_emmean",
+  "FORM.Q_emmean",
+  "KNG_emmean",
+  "RFE_emmean",
+  "RHI_emmean",
+  "SCH_emmean",
+  "SCO_emmean",
+  "STAE_emmean",
+  "PPO_emmean",
+  "SFL_emmean",
+  "KON_emmean",
+  "GES_emmean",
+  "GRA_emmean",
+  #"ZW_emmean",
+  #"WR_emmean",
+  #"U.pop_emmean",
+  "U.pop_root_emmean",
+  "N.pop_emmean",
+  "UE.pop_emmean")
+
+# these are the analysable traits for each environment
+
+traits_WIN19 <- PT_AEM_list_sc1[["PT_WIN19"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_WIN20 <- PT_AEM_list_sc1[["PT_WIN20"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_WIN21 <- PT_AEM_list_sc1[["PT_WIN21"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+traits_GRAN20 <- PT_AEM_list_sc1[["PT_GRAN20"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_GRAN21 <- PT_AEM_list_sc1[["PT_GRAN21"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+#----
+
+traits_PTAEM <- AEM_list_sc3 %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+
+```
+
+
+
+
+## Additive A.mat_VanRaden2008
+
+### PTWIN19 x GBLUP
+
+```{r}
+
+# predict PTWIN19 
+
+results_PTWIN19_GBLUP_A.mat_per_trait <- list()
+  
+for (t in traits_WIN19) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for GBLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_GBLUP(PT_data = PT_AEM_list_sc1[["PT_WIN19"]],
+                                 trait = t,
+                                 H_option = "standard") 
+  
+  # Do the 5 fold 25 repititions cv G-BLUP for every trait of the PT_data environment but with the newly build genomic relationship matrix 
+  results_PTWIN19_GBLUP_A.mat_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                   H_data = df$marker_df_matrix,
+                                                   folds = 5,
+                                                   relationship_matrix = df$H,
+                                                   trait = df$trait_column,
+                                                   repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN19_GBLUP_A.mat_per_trait, 
+     file = "../results/H-BLUP/PTWIN19_x_GBLUP_A.mat_VanRaden2008.Rda")
+
+
+# results_PTWIN19_GBLUP_A.mat_per_trait$RFE_emmean %>% median()
+
+```
+
+
+
+
+### PTWIN20 x GBLUP
+
+```{r}
+
+# predict PTWIN20 
+
+results_PTWIN20_GBLUP_A.mat_per_trait <- list()
+  
+for (t in traits_WIN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for GBLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_GBLUP(PT_data = PT_AEM_list_sc1[["PT_WIN20"]],
+                                 trait = t,
+                                 H_option = "standard") 
+  
+  # Do the 5 fold 25 repititions cv G-BLUP for every trait of the PT_data environment but with the newly build genomic relationship matrix 
+  results_PTWIN20_GBLUP_A.mat_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                   H_data = df$marker_df_matrix,
+                                                   folds = 5,
+                                                   relationship_matrix = df$H,
+                                                   trait = df$trait_column,
+                                                   repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN20_GBLUP_A.mat_per_trait, 
+     file = "../results/H-BLUP/PTWIN20_x_GBLUP_A.mat_VanRaden2008.Rda")
+
+
+
+```
+
+
+### PTWIN21 x GBLUP
+
+```{r}
+
+# predict PTWIN21 
+
+results_PTWIN21_GBLUP_A.mat_per_trait <- list()
+  
+for (t in traits_WIN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for GBLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_GBLUP(PT_data = PT_AEM_list_sc1[["PT_WIN21"]],
+                                 trait = t,
+                                 H_option = "standard") 
+  
+  # Do the 5 fold 25 repititions cv G-BLUP for every trait of the PT_data environment but with the newly build genomic relationship matrix 
+  results_PTWIN21_GBLUP_A.mat_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                   H_data = df$marker_df_matrix,
+                                                   folds = 5,
+                                                   relationship_matrix = df$H,
+                                                   trait = df$trait_column,
+                                                   repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN21_GBLUP_A.mat_per_trait, 
+     file = "../results/H-BLUP/PTWIN21_x_GBLUP_A.mat_VanRaden2008.Rda")
+
+
+
+```
+
+
+### PTGRAN20 x GBLUP
+
+```{r}
+
+# predict PTGRAN20
+
+results_PTGRAN20_GBLUP_A.mat_per_trait <- list()
+  
+for (t in traits_GRAN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for GBLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_GBLUP(PT_data = PT_AEM_list_sc1[["PT_GRAN20"]],
+                                 trait = t,
+                                 H_option = "standard") 
+  
+  # Do the 5 fold 25 repititions cv G-BLUP for every trait of the PT_data environment but with the newly build genomic relationship matrix 
+  results_PTGRAN20_GBLUP_A.mat_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                   H_data = df$marker_df_matrix,
+                                                   folds = 5,
+                                                   relationship_matrix = df$H,
+                                                   trait = df$trait_column,
+                                                   repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN20_GBLUP_A.mat_per_trait, 
+     file = "../results/H-BLUP/PTGRAN20_x_GBLUP_A.mat_VanRaden2008.Rda")
+
+
+
+```
+
+
+### PTGRAN21 x GBLUP
+
+```{r}
+
+# predict PTGRAN21 
+
+results_PTGRAN21_GBLUP_A.mat_per_trait <- list()
+  
+for (t in traits_GRAN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for GBLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_GBLUP(PT_data = PT_AEM_list_sc1[["PT_GRAN21"]],
+                                 trait = t,
+                                 H_option = "standard") 
+  
+  # Do the 5 fold 25 repititions cv G-BLUP for every trait of the PT_data environment but with the newly build genomic relationship matrix 
+  results_PTGRAN21_GBLUP_A.mat_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                   H_data = df$marker_df_matrix,
+                                                   folds = 5,
+                                                   relationship_matrix = df$H,
+                                                   trait = df$trait_column,
+                                                   repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN21_GBLUP_A.mat_per_trait, 
+     file = "../results/H-BLUP/PTGRAN21_x_GBLUP_A.mat_VanRaden2008.Rda")
+
+
+
+```
+
+
+
+## AEM ENV
+
+### PTAEM x GBLUP
+
+```{r}
+
+results_PTAEM_GBLUP_A.Mat_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  df <- data_wrangling_for_GBLUP(PT_data = AEM_list_sc3,
+                                 trait = t,
+                                 H_option = "standard") #t
+
+  results_PTAEM_GBLUP_A.Mat_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                 H_data = df$marker_df_matrix,
+                                                 folds = 5,
+                                                 relationship_matrix = df$H,
+                                                 trait = df$trait_column,
+                                                 repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEM_GBLUP_A.Mat_per_trait, 
+     file = "../results/H-BLUP/PTAEM_x_GBLUP_A.mat_VanRaden2008.Rda")
+
+
+
+
+```
+
+
+
+
+
+# D calculated with sommer
+
+```{r}
+
+#sommer 3.3 
+marker_df3 <- marker_df %>% 
+   filter(!is.na(Material)) %>% 
+   dplyr::select(-1, -2) %>% 
+   as.matrix()
+
+rownames(marker_df3) <- marker_df %>% filter(!is.na(Material)) %>% .$Material
+marker_df4 <- marker_df3[order(rownames(marker_df3)),]
+
+head(marker_df4[,1:5], 8)
+
+
+D <- D.mat(marker_df4, ploidy=4)
+
+D[1:6, 1:6]
+
+dim(D)
+
+
+save(file = "../../data/Data_Alessio_Axiom_21PT950_array/D_sommer_3.3.Rda", D)
+load(file = "../../data/Data_Alessio_Axiom_21PT950_array/D_sommer_3.3.Rda")
+
+
+head(D[,1:5], 8)
+
+
+```
+
+
+## A + D
+
+```{r}
+
+results_PTAEM_GBLUP_AD_nishio_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  df <- data_wrangling_for_GBLUP(PT_data = AEM_list_sc3,
+                                 trait = t,
+                                 H_option = "standard") #t
+  
+  #Hadamard product
+  #df$H3 <- df$H *df$H2
+  
+  #rownames(df$H) == rownames(D)
+  
+  
+
+  results_PTAEM_GBLUP_AD_nishio_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                 H_data = df$marker_df_matrix,
+                                                 folds = 5,
+                                                 relationship_matrix = df$H,
+                                                 relationship_matrix2 = D,
+                                                 trait = df$trait_column,
+                                                 repeats = 25,
+                                                 tolPar_threshold = 10000)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEM_GBLUP_AD_nishio_per_trait, 
+     file = "../results/H-BLUP/PTAEM_x_GBLUP_AD_nishio.Rda")
+
+
+
+
+```
+
+
+## A + D + E
+
+```{r}
+
+results_PTAEM_GBLUP_ADE_nishio_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  df <- data_wrangling_for_GBLUP(PT_data = AEM_list_sc3,
+                                 trait = t,
+                                 H_option = "standard") #t
+  
+  #Hadamard product
+  AA <- df$H * df$H
+  AD <- df$H * D
+  DD <- D * D
+  
+  #rownames(df$H) == rownames(D)
+  
+  
+
+  results_PTAEM_GBLUP_ADE_nishio_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                 H_data = df$marker_df_matrix,
+                                                 folds = 5,
+                                                 relationship_matrix = df$H,
+                                                 relationship_matrix2 = D,
+                                                 relationship_matrix3 = AA,
+                                                 relationship_matrix4 = AD,
+                                                 relationship_matrix5 = DD,
+                                                 trait = df$trait_column,
+                                                 repeats = 25,
+                                                 tolPar_threshold = 100000)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEM_GBLUP_ADE_nishio_per_trait, 
+     file = "../results/H-BLUP/PTAEM_x_GBLUP_ADE_nishio.Rda")
+
+
+
+
+```
+

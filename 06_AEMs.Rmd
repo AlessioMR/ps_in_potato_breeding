@@ -1,0 +1,1175 @@
+---
+title: "AEMs"
+author: "Alessio Maggiorelli"
+date: "23 08 2022"
+output: pdf_document
+---
+
+```{r script description}
+
+# This script pre-calculates the AEMs necessary for later scripts
+
+```
+
+
+
+```{r TO DO} 
+
+
+```
+
+
+
+```{r questions}
+
+
+```
+
+
+
+
+
+# Setup
+
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+
+```{r message=FALSE}
+
+library(stringr)
+library(RLRsim)
+library(Rcpp)
+library(readxl)
+library(ordinal)
+library(nlme)
+library(agridat)
+library(emmeans)
+library(lme4)
+library(plyr)
+library(tidyverse)
+
+source("./quick_AEM/main_function.R")
+
+```
+
+# Scenario 1 and 2
+
+## PT AEMs
+
+### load data
+
+```{r}
+
+data <- read_csv(file = "../../data/PT_cleaneddata_expadj_AM.csv")
+
+```
+
+### preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reihe, Beet, env_com), as.factor)) 
+
+
+traits <- c("AUF",
+            "AUG",
+            "EIN",
+            "ENT",
+            "ENT.II",
+            "ERT_adj",
+            "FORM.L",
+            "FORM.Q",
+            "KNG",
+            "RFE",
+            "RHI",
+            "SCH",
+            "SCO",
+            "STAE",
+            "PPO",
+            "SFL",
+            "KON",
+            "GES",
+            "GRA",
+            #"WR",
+            #"U.pop",
+            "U.pop_root",
+            "N.pop",
+            "UE.pop")
+
+
+```
+
+
+
+
+### Wrangling
+
+```{r}
+# Phenotype data of 2019 WIN
+PT_WIN19 <- data %>% 
+  filter(year == "2019",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2020 WIN
+PT_WIN20 <- data %>% 
+  filter(year == "2020",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2021 WIN
+PT_WIN21 <- data %>% 
+  filter(year == "2021",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2020 GRAN
+PT_GRAN20 <- data %>% 
+  filter(year == "2020",
+         loc == "GRAN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2021 GRAN
+PT_GRAN21 <- data %>% 
+  filter(year == "2021",
+         loc == "GRAN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+data_list <- list(PT_WIN19,
+     PT_WIN20,
+     PT_WIN21,
+     PT_GRAN20,
+     PT_GRAN21)
+
+names(data_list) <- c("PT_WIN19",
+     "PT_WIN20",
+     "PT_WIN21",
+     "PT_GRAN20",
+     "PT_GRAN21")
+
+
+```
+
+
+
+
+### Calculating AEMs
+
+```{r}
+
+
+AEM_list_sc1 <- list()
+
+for(d in 1:length(data_list)){
+  
+  
+  p_FIX_vector <- vector()
+  p_FIX <- "reset"
+  
+  for(i in 1:length(traits)){
+    
+    tryCatch({
+      
+      tryCatch({
+      
+        # the null model, the model without the random effect we want to test
+        m0 <- lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe), data_list[[d]])
+    
+        # the alternative model, the model with the random effect we want to test
+        mA <- lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe) + (1|Block:Beet), data_list[[d]])
+    
+        # the m model, the model with all fixed effects and just the random effect being   tested.
+        m  <- lmer(get(traits[i]) ~ G + (1|Block:Beet), data_list[[d]])
+        
+        
+      }, error=function(e){})
+        
+      tryCatch({
+  
+      
+        p_FIX <- exactRLRT(m0 = m0, 
+                    mA = mA,
+                    m = m)$p.value
+          
+  
+      }, error=function(e){})
+        
+      tryCatch({
+      
+        if(is.character(p_FIX)){
+          
+          p_FIX <- 1
+          
+        }
+        
+      }, error=function(e){})
+      
+      p_FIX_vector <- c(p_FIX_vector, p_FIX)
+      
+      p_FIX <- "reset"
+      
+      rm(m0, mA, m)
+      
+    }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+    
+    print(traits[i])
+    print(i)
+    
+  }
+  
+  model_instruction_df <- data.frame(trait = traits,
+                   p_FIX = p_FIX_vector) %>%  
+    dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                               TRUE ~ TRUE))
+  
+  
+  
+  #### Modelling
+  
+  fit_list_FG <- list() #fixed Genotype
+  
+  for (i in 1:length(traits)) {
+    
+    fit_list_FG[[i]] <- 
+      
+      tryCatch({
+    
+        if(model_instruction_df$include_Beet_FIX[i]){
+        
+          lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe) + (1|Block:Beet), data_list[[d]])
+        
+        } else {
+        
+          lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe), data_list[[d]])
+        
+        }
+      
+    }, error=function(e) {
+      
+      "No model possible (most likely because of missing PT data)"
+      
+    })
+    
+  }
+  
+  # change the names of the list
+  names(fit_list_FG) <- traits
+  #length(fit_list_FG)
+  
+  fit_list_FG <- fit_list_FG[fit_list_FG != "No model possible (most likely because of missing PT data)"]
+  
+  
+  #### AEMS
+  
+  AEM_FG_list <- list()
+  
+  for(i in 1:length(fit_list_FG)){
+    
+    AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")$aem
+    
+  }
+  
+  names(AEM_FG_list) <- names(fit_list_FG)
+  
+  
+  for (i in names(AEM_FG_list)){
+    colnames(AEM_FG_list[[i]]) <- c("G", paste0(i,"_emmean"))
+  }
+  
+  AEM_list_sc1[[d]] <- plyr::join_all(AEM_FG_list, by='G', type='left')
+  
+}
+
+names(AEM_list_sc1) <- names(data_list)
+
+save(AEM_list_sc1, file = "../results/AEMs/sc1_PT_AEMs_new.Rda")
+
+```
+
+
+
+
+
+## M AEMs
+
+### load data
+
+```{r}
+
+data <- read_csv(file = "../../data/UAV/NIRS_Data_PMMimp_after_PCoA.csv")
+
+```
+
+### preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reife, Reihe, Beet, env_com), as.factor)) 
+
+
+traits <- data %>% 
+  dplyr::select(X530nm_MEAN.D2_imp:X570nm_MEAN.D4_imp) %>% 
+  names() %>% as.vector()
+
+```
+
+
+
+
+### Wrangling
+
+```{r}
+
+
+
+# Phenotype data of 2020 WIN
+H_WIN20 <- data %>% 
+  filter(year == "2020",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2021 WIN
+H_WIN21 <- data %>% 
+  filter(year == "2021",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+data_list <- list(
+     H_WIN20,
+     H_WIN21)
+
+names(data_list) <- c("H_WIN20",
+     "H_WIN21")
+
+
+```
+
+
+
+
+### Calculating AEMs
+
+```{r}
+
+
+AEM_list_sc1 <- list()
+
+for(d in 1:length(data_list)){
+  
+  # loop through all traits and test for the significance of the Beet effect. Build an   instruction dataframe
+  
+  p_FIX_vector <- vector()
+  p_FIX <- "reset"
+  
+  for(i in 1:length(traits)){
+    
+    tryCatch({
+      
+      tryCatch({
+      
+        # the null model, the model without the random effect we want to test
+        m0 <- lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe), data_list[[d]])
+    
+        # the alternative model, the model with the random effect we want to test
+        mA <- lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe) + (1|Block:Beet), data_list[[d]])
+    
+        # the m model, the model with all fixed effects and just the random effect being   tested.
+        m  <- lmer(get(traits[i]) ~ G + (1|Block:Beet), data_list[[d]])
+        
+        
+      }, error=function(e){})
+        
+      tryCatch({
+  
+      
+        p_FIX <- exactRLRT(m0 = m0, 
+                    mA = mA,
+                    m = m)$p.value
+          
+  
+      }, error=function(e){})
+        
+      tryCatch({
+      
+        if(is.character(p_FIX)){
+          
+          p_FIX <- 1
+          
+        }
+        
+      }, error=function(e){})
+      
+      p_FIX_vector <- c(p_FIX_vector, p_FIX)
+      
+      p_FIX <- "reset"
+      
+      rm(m0, mA, m)
+      
+    }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+    
+    print(traits[i])
+    print(i)
+    
+  }
+  
+  model_instruction_df <- data.frame(trait = traits,
+                   p_FIX = p_FIX_vector) %>%  
+    dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                               TRUE ~ TRUE))
+  
+  
+  
+  #### Modelling
+  
+  fit_list_FG <- list() #fixed Genotype
+  
+  for (i in 1:length(traits)) {
+    
+    fit_list_FG[[i]] <- 
+      
+      tryCatch({
+    
+        if(model_instruction_df$include_Beet_FIX[i]){
+        
+          lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe) + (1|Block:Beet), data_list[[d]])
+        
+        } else {
+        
+          lmer(get(traits[i]) ~ G + (1|Block) + (1|Reihe), data_list[[d]])
+        
+        }
+      
+    }, error=function(e) {
+      
+      "No model possible (most likely because of missing PT data)"
+      
+    })
+    
+  }
+  
+  # change the names of the list
+  names(fit_list_FG) <- traits
+  #length(fit_list_FG)
+  
+  fit_list_FG <- fit_list_FG[fit_list_FG != "No model possible (most likely because of missing PT data)"]
+  
+  
+  #### AEMS
+  
+  AEM_FG_list <- list()
+  
+  for(i in 1:length(fit_list_FG)){
+    
+    AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")$aem
+    
+  }
+  
+  names(AEM_FG_list) <- names(fit_list_FG)
+  
+  
+  for (i in names(AEM_FG_list)){
+    colnames(AEM_FG_list[[i]]) <- c("G", paste0(i,"_emmean"))
+  }
+  
+  AEM_list_sc1[[d]] <- plyr::join_all(AEM_FG_list, by='G', type='left')
+  
+}
+
+names(AEM_list_sc1) <- names(data_list)
+
+save(AEM_list_sc1, file = "../results/AEMs/sc1_H_AEMs_new.Rda")
+
+```
+
+
+
+# Scenario 3
+
+
+
+## PT AEMs
+
+### load data
+
+```{r}
+
+data <- read_csv(file = "../../data/PT_cleaneddata_expadj_AM.csv")
+
+```
+
+### preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reihe, Beet, env_com), as.factor)) 
+
+
+traits <- c("AUF",
+            "AUG",
+            "EIN",
+            "ENT",
+            "ENT.II",
+            "ERT_adj",
+            "FORM.L",
+            "FORM.Q",
+            "KNG",
+            "RFE",
+            "RHI",
+            "SCH",
+            "SCO",
+            "STAE",
+            "PPO",
+            "SFL",
+            "KON",
+            "GES",
+            "GRA",
+            #"WR",
+            #"U.pop",
+            "U.pop_root",
+            "N.pop",
+            "UE.pop")
+
+
+```
+
+
+
+
+
+### Calculating AEMs
+
+```{r}
+
+  
+p_FIX_vector <- vector()
+p_FIX <- "reset"
+
+for(i in 1:length(traits)){
+  
+  tryCatch({
+    
+    tryCatch({
+    
+      # the null model, the model without the random effect we want to test
+      m0 <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+  
+      # the alternative model, the model with the random effect we want to test
+      mA <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+  
+      # the m model, the model with all fixed effects and just the random effect being  tested.
+      m  <- lmer(get(traits[i]) ~ G + (1|env_com:Block:Beet), data)
+      
+      
+    }, error=function(e){})
+      
+    tryCatch({
+
+    
+      p_FIX <- exactRLRT(m0 = m0, 
+                  mA = mA,
+                  m = m)$p.value
+        
+
+    }, error=function(e){})
+      
+    tryCatch({
+    
+      if(is.character(p_FIX)){
+        
+        p_FIX <- 1
+        
+      }
+      
+    }, error=function(e){})
+    
+    p_FIX_vector <- c(p_FIX_vector, p_FIX)
+    
+    p_FIX <- "reset"
+    
+    rm(m0, mA, m)
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+  print(traits[i])
+  print(i)
+  
+}
+
+model_instruction_df <- data.frame(trait = traits,
+                 p_FIX = p_FIX_vector) %>%  
+  dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE))
+
+
+
+#### Modelling
+
+fit_list_FG <- list() #fixed Genotype
+
+for (i in 1:length(traits)) {
+  
+  fit_list_FG[[i]] <- 
+    
+    tryCatch({
+  
+      if(model_instruction_df$include_Beet_FIX[i]){
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+      
+      } else {
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+      
+      }
+    
+  }, error=function(e) {
+    
+    "No model possible (most likely because of missing PT data)"
+    
+  })
+  
+}
+
+# change the names of the list
+names(fit_list_FG) <- traits
+#length(fit_list_FG)
+
+fit_list_FG <- fit_list_FG[fit_list_FG != "No model possible (most likely because of issing PT data)"]
+
+
+#### AEMS
+
+AEM_FG_list <- list()
+
+for(i in 1:length(fit_list_FG)){
+  
+  AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")$aem
+  
+}
+
+names(AEM_FG_list) <- names(fit_list_FG)
+
+
+for (i in names(AEM_FG_list)){
+  colnames(AEM_FG_list[[i]]) <- c("G", paste0(i,"_emmean"))
+}
+
+AEM_list_sc3 <- plyr::join_all(AEM_FG_list, by='G', type='left')
+  
+
+
+
+save(AEM_list_sc3, file = "../results/AEMs/sc3_PT_AEMs_new.Rda")
+
+```
+
+
+
+# Scenario 3 without original env
+
+## PT AEMs
+
+### load data
+
+```{r message=FALSE}
+
+data <- read_csv(file = "../../data/PT_cleaneddata_expadj_AM.csv")
+
+```
+
+### preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reihe, Beet, env_com), as.factor)) 
+
+
+traits <- c("AUF",
+            "AUG",
+            "EIN",
+            "ENT",
+            "ENT.II",
+            "ERT_adj",
+            "FORM.L",
+            "FORM.Q",
+            "KNG",
+            "RFE",
+            "RHI",
+            "SCH",
+            "SCO",
+            "STAE",
+            "PPO",
+            "SFL",
+            "KON",
+            "GES",
+            "GRA",
+            #"WR",
+            #"U.pop",
+            "U.pop_root",
+            "N.pop",
+            "UE.pop")
+
+
+```
+
+### Prepare data sets without original environment
+
+```{r}
+
+data_without_WIN20 <- data %>% 
+  filter(env_com != "WIN2020")
+
+data_without_WIN21 <- data %>% 
+  filter(env_com != "WIN2021")
+
+```
+
+
+
+
+### Calculating AEMs w/o WIN20
+
+```{r}
+
+  
+p_FIX_vector <- vector()
+p_FIX <- "reset"
+
+for(i in 1:length(traits)){
+  
+  tryCatch({
+    
+    tryCatch({
+    
+      # the null model, the model without the random effect we want to test
+      m0 <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data_without_WIN20)
+  
+      # the alternative model, the model with the random effect we want to test
+      mA <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data_without_WIN20)
+  
+      # the m model, the model with all fixed effects and just the random effect being  tested.
+      m  <- lmer(get(traits[i]) ~ G + (1|env_com:Block:Beet), data_without_WIN20)
+      
+      
+    }, error=function(e){})
+      
+    tryCatch({
+
+    
+      p_FIX <- exactRLRT(m0 = m0, 
+                  mA = mA,
+                  m = m)$p.value
+        
+
+    }, error=function(e){})
+      
+    tryCatch({
+    
+      if(is.character(p_FIX)){
+        
+        p_FIX <- 1
+        
+      }
+      
+    }, error=function(e){})
+    
+    p_FIX_vector <- c(p_FIX_vector, p_FIX)
+    
+    p_FIX <- "reset"
+    
+    rm(m0, mA, m)
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+  print(traits[i])
+  print(i)
+  
+}
+
+model_instruction_df <- data.frame(trait = traits,
+                 p_FIX = p_FIX_vector) %>%  
+  dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE))
+
+
+
+#### Modelling
+
+fit_list_FG <- list() #fixed Genotype
+
+for (i in 1:length(traits)) {
+  
+  fit_list_FG[[i]] <- 
+    
+    tryCatch({
+  
+      if(model_instruction_df$include_Beet_FIX[i]){
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data_without_WIN20)
+      
+      } else {
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data_without_WIN20)
+      
+      }
+    
+  }, error=function(e) {
+    
+    "No model possible (most likely because of missing PT data)"
+    
+  })
+  
+}
+
+# change the names of the list
+names(fit_list_FG) <- traits
+#length(fit_list_FG)
+
+fit_list_FG <- fit_list_FG[fit_list_FG != "No model possible (most likely because of issing PT data)"]
+
+
+#### AEMS
+
+AEM_FG_list <- list()
+
+for(i in 1:length(fit_list_FG)){
+  
+  AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")$aem
+  
+}
+
+names(AEM_FG_list) <- names(fit_list_FG)
+
+
+for (i in names(AEM_FG_list)){
+  colnames(AEM_FG_list[[i]]) <- c("G", paste0(i,"_emmean"))
+}
+
+AEM_list_sc3_woWIN20 <- plyr::join_all(AEM_FG_list, by='G', type='left')
+  
+
+
+
+save(AEM_list_sc3_woWIN20, file = "../results/AEMs/sc3_PT_AEMs_woWIN20_new.Rda")
+
+```
+
+
+
+### Calculating AEMs w/o WIN21
+
+```{r}
+
+  
+p_FIX_vector <- vector()
+p_FIX <- "reset"
+
+for(i in 1:length(traits)){
+  
+  tryCatch({
+    
+    tryCatch({
+    
+      # the null model, the model without the random effect we want to test
+      m0 <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data_without_WIN21)
+  
+      # the alternative model, the model with the random effect we want to test
+      mA <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data_without_WIN21)
+  
+      # the m model, the model with all fixed effects and just the random effect being  tested.
+      m  <- lmer(get(traits[i]) ~ G + (1|env_com:Block:Beet), data_without_WIN21)
+      
+      
+    }, error=function(e){})
+      
+    tryCatch({
+
+    
+      p_FIX <- exactRLRT(m0 = m0, 
+                  mA = mA,
+                  m = m)$p.value
+        
+
+    }, error=function(e){})
+      
+    tryCatch({
+    
+      if(is.character(p_FIX)){
+        
+        p_FIX <- 1
+        
+      }
+      
+    }, error=function(e){})
+    
+    p_FIX_vector <- c(p_FIX_vector, p_FIX)
+    
+    p_FIX <- "reset"
+    
+    rm(m0, mA, m)
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+  print(traits[i])
+  print(i)
+  
+}
+
+model_instruction_df <- data.frame(trait = traits,
+                 p_FIX = p_FIX_vector) %>%  
+  dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE))
+
+
+
+#### Modelling
+
+fit_list_FG <- list() #fixed Genotype
+
+for (i in 1:length(traits)) {
+  
+  fit_list_FG[[i]] <- 
+    
+    tryCatch({
+  
+      if(model_instruction_df$include_Beet_FIX[i]){
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data_without_WIN21)
+      
+      } else {
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data_without_WIN21)
+      
+      }
+    
+  }, error=function(e) {
+    
+    "No model possible (most likely because of missing PT data)"
+    
+  })
+  
+}
+
+# change the names of the list
+names(fit_list_FG) <- traits
+#length(fit_list_FG)
+
+fit_list_FG <- fit_list_FG[fit_list_FG != "No model possible (most likely because of missing PT data)"]
+
+
+#### AEMS
+
+AEM_FG_list <- list()
+
+for(i in 1:length(fit_list_FG)){
+  
+  AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")$aem
+  
+}
+
+names(AEM_FG_list) <- names(fit_list_FG)
+
+
+for (i in names(AEM_FG_list)){
+  colnames(AEM_FG_list[[i]]) <- c("G", paste0(i,"_emmean"))
+}
+
+AEM_list_sc3_woWIN21 <- plyr::join_all(AEM_FG_list, by='G', type='left')
+  
+
+
+
+save(AEM_list_sc3_woWIN21, file = "../results/AEMs/sc3_PT_AEMs_woWIN21_new.Rda")
+
+```
+
+
+
+# Scenario 4
+
+
+
+## M AEMs
+
+### load data
+
+```{r}
+
+data <- read_csv(file = "../../data/UAV/NIRS_Data_PMMimp_after_PCoA.csv")
+
+```
+
+### preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reihe, Beet, env_com), as.factor)) 
+
+
+traits <- data %>% 
+  dplyr::select(X530nm_MEAN.D2_imp:X570nm_MEAN.D4_imp) %>% 
+  names() %>% as.vector()
+
+
+```
+
+
+
+
+
+### Calculating AEMs
+
+```{r}
+
+  
+p_FIX_vector <- vector()
+p_FIX <- "reset"
+
+for(i in 1:length(traits)){
+  
+  tryCatch({
+    
+    tryCatch({
+    
+      # the null model, the model without the random effect we want to test
+      m0 <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+  
+      # the alternative model, the model with the random effect we want to test
+      mA <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+  
+      # the m model, the model with all fixed effects and just the random effect being  tested.
+      m  <- lmer(get(traits[i]) ~ G + (1|env_com:Block:Beet), data)
+      
+      
+    }, error=function(e){})
+      
+    tryCatch({
+
+    
+      p_FIX <- exactRLRT(m0 = m0, 
+                  mA = mA,
+                  m = m)$p.value
+        
+
+    }, error=function(e){})
+      
+    tryCatch({
+    
+      if(is.character(p_FIX)){
+        
+        p_FIX <- 1
+        
+      }
+      
+    }, error=function(e){})
+    
+    p_FIX_vector <- c(p_FIX_vector, p_FIX)
+    
+    p_FIX <- "reset"
+    
+    rm(m0, mA, m)
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+  print(traits[i])
+  print(i)
+  
+}
+
+model_instruction_df <- data.frame(trait = traits,
+                 p_FIX = p_FIX_vector) %>%  
+  dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE))
+
+
+
+#### Modelling
+
+fit_list_FG <- list() #fixed Genotype
+
+for (i in 1:length(traits)) {
+  
+  fit_list_FG[[i]] <- 
+    
+    tryCatch({
+  
+      if(model_instruction_df$include_Beet_FIX[i]){
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+      
+      } else {
+      
+        lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+      
+      }
+    
+  }, error=function(e) {
+    
+    "No model possible (most likely because of missing PT data)"
+    
+  })
+  
+}
+
+# change the names of the list
+names(fit_list_FG) <- traits
+#length(fit_list_FG)
+
+
+#### AEMS
+
+AEM_FG_list <- list()
+
+for(i in 1:length(fit_list_FG)){
+  
+  AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")$aem
+  
+}
+
+names(AEM_FG_list) <- names(fit_list_FG)
+
+
+for (i in names(AEM_FG_list)){
+  colnames(AEM_FG_list[[i]]) <- c("G", paste0(i,"_emmean"))
+}
+
+AEM_list_sc4 <- plyr::join_all(AEM_FG_list, by='G', type='left')
+  
+
+
+
+save(AEM_list_sc4, file = "../results/AEMs/sc4_H_AEMs_new.Rda")
+
+```
+
+
+
+

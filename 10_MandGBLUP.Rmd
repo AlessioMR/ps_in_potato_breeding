@@ -1,0 +1,530 @@
+---
+title: "MandG-BLUP"
+author: "Alessio Maggiorelli"
+date: "26 4 2022"
+output: pdf_document
+---
+
+```{r}
+
+# This script does the M and GBLUP together via weighted relationship matrices. This is done only for scenario 5 and 7. 
+
+```
+
+
+# Setup
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+  
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+  
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+```{r packages, include = FALSE, message = FALSE}
+
+library(data.table)
+library(sommer)
+library(emmeans)
+library(lme4)
+library(openxlsx)
+library(stringr)
+library(tidyverse)
+library(AGHmatrix)
+
+```
+
+
+## Load data
+
+```{r load data, include = FALSE}
+
+PT_data <- read.csv(file = "../../data/PT_cleaneddata_expadj_AM.csv")
+H_data <- read.csv(file = "../../data/UAV/NIRS_Data_PMMimp_after_PCoA.csv")
+marker_df <- read_csv("../../data/Data_Alessio_Axiom_21PT950_array/joined_marker_data_AM_int_updatedCalls.csv")
+
+
+```
+
+### AEMs
+
+```{r AEMs, include = FALSE, message = FALSE}
+
+load("../results/AEMs/sc1_H_AEMs_new.Rda")
+H_AEM_list_sc1 <- AEM_list_sc1
+load("../results/AEMs/sc3_PT_AEMs_new.Rda")
+#AEM_list_sc3
+
+```
+
+
+## Traits analysed
+
+
+```{r}
+
+# For every PT dataset, depending on the year and location not every trait can be analysed (due to missing trait data)
+
+# In this code chunk we will find analysable trait data for each PT dataset
+
+#-----------------
+
+# These are the sets of all possible traits
+
+traits <- c(
+  "AUF_emmean",
+  "AUG_emmean",
+  "EIN_emmean",
+  "ENT_emmean",
+  "ENT.II_emmean",
+  "ERT_adj_emmean",
+  "FORM.L_emmean",
+  "FORM.Q_emmean",
+  "KNG_emmean",
+  "RFE_emmean",
+  "RHI_emmean",
+  "SCH_emmean",
+  "SCO_emmean",
+  "STAE_emmean",
+  "PPO_emmean",
+  "SFL_emmean",
+  "KON_emmean",
+  "GES_emmean",
+  "GRA_emmean",
+  #"ZW_emmean",
+  #"WR_emmean",
+  #"U.pop_emmean",
+  "U.pop_root_emmean",
+  "N.pop_emmean",
+  "UE.pop_emmean")
+
+
+traits_PTAEM <- AEM_list_sc3 %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+
+```
+
+
+```{r}
+# in scenario 5 the multispectral data of both environments will be combined by using each env x channel combination as a new predioctor (column joining). That means we have to search for matching Genotypes that occur in both years
+names(H_AEM_list_sc1$H_WIN20) <- paste0(names(H_AEM_list_sc1$H_WIN20), "_WIN20")
+names(H_AEM_list_sc1$H_WIN21) <- paste0(names(H_AEM_list_sc1$H_WIN21), "_WIN21")
+  
+AEM_list_sc5 <- H_AEM_list_sc1$H_WIN20 %>% 
+  cbind(H_AEM_list_sc1$H_WIN21) %>% 
+  dplyr::select("G" = G_WIN20,
+                everything(),
+                -G_WIN21)
+
+
+
+```
+
+
+## Define functions
+
+### UDF MBLUP Data wrangler
+
+```{r UDF data_wrangler}
+##########################################
+###      Data wrangling function       ###
+##########################################
+
+data_wrangling_for_cv <- function(PT_data, H_data, trait){
+  
+  # PT_data = AEM_list_sc3
+  # H_data = H_AEM_list_sc1[["H_WIN20"]]
+  # trait = traits_PTAEM
+  
+  interG <- intersect(PT_data$G, H_data$G)
+  
+  # then filter PT data for matching Genotypes, arrange in G order and mutate the genotype column as a factor
+  PT_data <- PT_data %>% 
+  filter(G %in% interG) %>% 
+  dplyr::arrange(G) %>% 
+  dplyr::mutate(G = as.factor(G))
+  
+  PT_data$G <- droplevels(PT_data$G)
+  
+  rownames(PT_data) <- PT_data$G
+  
+  # Also filter the multispectral data for matching Genotypes and arrange for G
+  H_data <- H_data %>% 
+    filter(G %in% interG) %>% 
+    dplyr::arrange(G)  
+  
+  # Convert NIRS data as matrix
+  H_matrix <- H_data %>% 
+  dplyr::select(-G) %>% 
+  as.matrix()
+  
+  # Rename column names to Genotype names for the multispectral matrix
+  rownames(H_matrix) <- PT_data$G
+  
+  # Calculate relationship matrix
+  H <- (H_matrix%*%t(H_matrix))/ncol(H_matrix)
+  
+  # Rename column and rownames of the relationship matrix to the Genotypes
+  colnames(H) <- PT_data$G
+  rownames(H) <- PT_data$G
+  
+  wrangled_data <- list(PT_data = PT_data, 
+                        H_matrix = H_matrix, 
+                        H = H, 
+                        trait_column = PT_data[,trait])
+  
+  return(wrangled_data)
+  
+}
+
+```
+
+
+### UDF GBLUP data wrangler
+
+
+```{r}
+
+##########################################
+###     Data wrangling function V3     ###
+##########################################
+
+
+data_wrangling_for_GBLUP <- function(PT_data, trait, H_option){
+  
+  # marker_df
+  # PT_data <- PT_AEM_list_sc1[["PT_WIN19"]]
+  # trait <- "RFE_emmean"
+
+  interG <- intersect(PT_data$G, marker_df$Material)
+  
+  # then filter PT data for matching Genotypes, arrange in G order and mutate the genotype column as a factor
+  PT_data <- PT_data %>% 
+  filter(G %in% interG) %>% 
+  dplyr::arrange(G) %>% 
+  dplyr::mutate(G = as.factor(G))
+  
+  PT_data$G <- droplevels(PT_data$G)
+  
+  rownames(PT_data) <- PT_data$G
+  
+  # Also filter the marker data for matching Genotypes and arrange for the Genotype
+  marker_df_w <- marker_df %>% 
+    filter(Material %in% interG) %>% 
+    dplyr::arrange(Material)  
+  
+  
+  # Convert marker data as matrix
+  marker_df_w <- marker_df_w %>% 
+  dplyr::select(-genotype, -Material) %>% 
+  as.matrix()
+  
+  # Rename column names to Genotype names for the marker matrix
+  rownames(marker_df_w) <- PT_data$G
+  
+  # Calculate relationship matrix
+  if(H_option == "standard"){
+    
+    H <- (marker_df_w%*%t(marker_df_w))/ncol(marker_df_w)
+    
+  }
+  
+  if(H_option == "A.mat_VanRaden2008"){H <- AGHmatrix::Gmatrix(marker_df_w,
+                                                               method="VanRaden",
+                                                               ploidy=4)}
+  
+  if(H_option == "D.mat_Endelmann2018"){H <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                method="Endelman", 
+                                                                ploidy=4)}
+  
+  if(H_option == "Fullauto.mat_Slater2016"){H <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="Slater", 
+                                                                    ploidy=4)}
+  
+  if(H_option == "Pseudodi.mat_Slater2016"){H <- AGHmatrix::Gmatrix(marker_df_w, 
+                                                                    method="VanRaden", 
+                                                                    ploidy=4,
+                                                                    pseudo.diploid = TRUE)}
+  
+  # Rename column and rownames of the relationship matrix to the Genotypes
+  colnames(H) <- PT_data$G
+  rownames(H) <- PT_data$G
+  
+  wrangled_data <- list(PT_data = PT_data,
+                        marker_df_matrix = marker_df_w,
+                        H = H, 
+                        trait_column = PT_data[,trait])
+  
+  #H[1:5,1:5]
+  
+  return(wrangled_data)
+  
+}
+
+
+```
+
+
+### GBLUP with cross-validation
+
+```{r UDF GBLUP with cross-validation}
+##########################################
+### X fold cross-validation function   ###
+##########################################
+
+# This function computes the GBlup with cross validation. The number of folds and repititions are adjustable.
+
+
+cv <- function(phenotype_data, trait, H_data, folds = 5, relationship_matrix, repeats = 25){
+
+  
+  # phenotype_data = Grel$PT_data
+  # H_data = Grel$marker_df_matrix
+  # folds = 5
+  # relationship_matrix = G
+  # trait = Grel$trait_column
+  # repeats = 25
+  # 
+  # create a new correlation object where every correlation result of the folds x repitition cv will be stored
+  cor1 <- NULL
+  
+  
+  # For every repeat:
+  for(r in 1:repeats){
+    
+    # r = 1
+    
+    # Set a new seed (reproducible sets) and split the data into 5 equal folds
+    set.seed(r)
+    set_in_random_order <- sample(H_data %>% nrow(), replace = FALSE)
+    sets <- split(set_in_random_order, cut(seq_along(set_in_random_order), folds, labels = FALSE))
+
+    # For every fold
+    for (i in 1:folds) {
+      
+      # i = 1
+      
+      # Reset the PT data
+      PT_dataset <- phenotype_data
+      
+      # Set the values for the IDs of the training column to NA (to be predicted)
+      train_column <- trait
+      train_column[sets[[i]]] <- NA
+      
+      # append the training column to the data
+      PT_dataset <- cbind(PT_dataset, train_column)
+      
+      fit <- mmer(fixed = train_column ~ 1,
+                  random = ~vsr(G, Gu = relationship_matrix),
+                  rcov = ~vsr(units),
+                  data = PT_dataset, verbose = F,
+                  date.warning = FALSE)
+      
+      # Calculate the estimated breeding values
+      GEBVs <- fit$Beta$Estimate + fit$U$`u:G`$train_column
+      validation_set_index <- match(phenotype_data$G[sets[[i]]], names(GEBVs))
+      
+      # calculate the correlation between the GEBVs and the predictions of the training column
+      cor1 <- c(cor1, cor(trait[sets[[i]]], GEBVs[validation_set_index], use = "pairwise.complete.obs"))
+    
+    }
+    
+    print(paste("Repeat", r))
+    
+  }
+  
+ return(cor1)
+  
+}
+
+
+
+```
+
+
+```{r UDF GBLUP with cross-validation}
+##########################################
+### X fold cross-validation function   ###
+##########################################
+
+# This function computes the GBlup with cross validation. The number of folds and repititions are adjustable.
+
+
+cv <- function(phenotype_data, trait, H_data, folds = 5, relationship_matrix, repeats = 25){
+
+  
+  # phenotype_data = Grel$PT_data
+  # H_data = Grel$marker_df_matrix
+  # folds = 5
+  # relationship_matrix = G
+  # trait = Grel$trait_column
+  # repeats = 25
+  # 
+  # create a new correlation object where every correlation result of the folds x repitition cv will be stored
+  cor1 <- NULL
+  
+  
+  # For every repeat:
+  for(r in 1:repeats){
+    
+    # r = 1
+    
+    # Set a new seed (reproducible sets) and split the data into 5 equal folds
+    set.seed(r)
+    set_in_random_order <- sample(H_data %>% nrow(), replace = FALSE)
+    sets <- split(set_in_random_order, cut(seq_along(set_in_random_order), folds, labels = FALSE))
+
+    # For every fold
+    for (i in 1:folds) {
+      
+      # i = 1
+      
+      # Reset the PT data
+      PT_dataset <- phenotype_data
+      
+      # Set the values for the IDs of the training column to NA (to be predicted)
+      train_column <- trait
+      train_column[sets[[i]]] <- NA
+      
+      # append the training column to the data
+      PT_dataset <- cbind(PT_dataset, train_column)
+      
+      # run the H-BLUP; the relationship matrix H is usually calculated beforehand in the function 'data_wrangling_for_cv'
+      fit <- mmer(fixed = train_column ~ 1,
+                  random = ~vsr(G, Gu = relationship_matrix),
+                  rcov = ~vsr(units),
+                  data = PT_dataset, verbose = F,
+                  date.warning = FALSE)
+      
+      # Calculate the estimated breeding values
+      GEBVs <- fit$Beta$Estimate + fit$U$`u:G`$train_column
+      validation_set_index <- match(phenotype_data$G[sets[[i]]], names(GEBVs))
+      
+      # calculate the correlation between the GEBVs and the predictions of the training column
+      cor1 <- c(cor1, cor(trait[sets[[i]]], GEBVs[validation_set_index], use = "pairwise.complete.obs"))
+    
+    }
+    
+    print(paste("Repeat", r))
+    
+  }
+  
+ return(cor1)
+  
+}
+
+
+
+```
+
+
+## Modelling
+
+```{r}
+results_list <- list()
+
+for (i in traits_PTAEM){
+  
+  print(paste("Calculate first rel mat for", i))
+  
+  # first we use the functions I wrote to determine the genotypes that appear in the sc3 AEMs (PT data) AND in the multispectral data set (H_data)
+  Mwrangler <- data_wrangling_for_cv(PT_data = AEM_list_sc3,
+                                     H_data = AEM_list_sc5,
+                                     trait = i)
+
+  #Here we search for matching genotypes from the marker data and the pt data
+  Gwrangler <- data_wrangling_for_GBLUP(PT_data = AEM_list_sc3,
+                                        H_option = "standard",
+                                        trait = i)
+  
+  # here we match the genotypes between the matched genotypes before
+  matching_genotypes <- intersect(rownames(Gwrangler$marker_df_matrix), rownames(Mwrangler$H_matrix))
+  
+  #Now filter the PT data for the matching genotypes
+  AEM_list_sc3_filtered <- AEM_list_sc3 %>% 
+  filter(G %in% matching_genotypes)
+  
+  print(paste("Calculate second rel mat for", i))
+  
+  #Now calculate the relationship matrices of both data sets based on this prefiltered PT data set. This   ensures both rel matrices have the same size and contain the same genotypes
+  Mrel <- data_wrangling_for_cv(PT_data = AEM_list_sc3_filtered,
+                                H_data = AEM_list_sc5,
+                                trait = i)
+  
+  #Here we search for matching genotypes from the marker data and the pt data
+  Grel <- data_wrangling_for_GBLUP(PT_data = AEM_list_sc3_filtered,
+                                   H_option = "standard",
+                                   trait = i)
+  
+  print(paste("Standardizing rel mats for", i))
+  
+  #Original G matrix
+  G <- Grel$H
+  
+  #The P matrix needed for standardization
+  P <- (diag(nrow(G)) - matrix(rep(1, ncol(G)), ncol = 1)%*%matrix(rep(1, ncol(G)), nrow = 1))/nrow(G)
+  
+  #The normalized G Matrix
+  GN <- ((nrow(G) - 1) * G)/(sum(diag(P%*%G%*%P)))
+  
+  
+  ###------ now for M
+  
+  M <- Mrel$H 
+  
+  P <- (diag(nrow(M)) - matrix(rep(1, ncol(M)), ncol = 1)%*%matrix(rep(1, ncol(M)), nrow = 1))/nrow(M)
+  
+  MN <- ((nrow(M) - 1) * (M))/(sum(diag(P%*%(M)%*%P)))
+  
+  print(paste("Starting weighted BLUP for", i))
+  
+  trait_result_list <- list()
+  
+  for (ii in c(0, 0.001,0.005,0.01,0.02,0.05, seq(0.1,0.9,0.05), 0.95,0.98,0.99, 0.995, 0.999, 1)){
+    
+    trait_result_list[[as.character(ii)]] <- cv(phenotype_data = Mrel$PT_data,
+                                                H_data = Mrel$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = MN*ii + GN*(1-ii),
+                                                trait = Mrel$trait_column,
+                                                repeats = 25)
+    
+  }
+  
+  results_list[[i]] <- trait_result_list
+  
+}
+
+
+```
+
+
+
+
+```{r}
+# results_list[["ERT_adj_emmean"]]
+
+save(results_list, file = "../results/H-BLUP/Weighted_BLUP_results.RData")
+save(results_list, file = "../results/H-BLUP/Weighted_BLUP_results.Rda")
+
+```
+
+
+```{r}
+
+```
+
+

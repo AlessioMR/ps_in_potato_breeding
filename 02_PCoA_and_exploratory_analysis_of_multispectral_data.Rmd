@@ -1,0 +1,1202 @@
+---
+title: "PCOA of multispectral data"
+author: "Alessio Maggiorelli"
+output: pdf_document
+---
+
+
+
+# Setup
+
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+  
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+  
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+
+```{r}
+
+
+library(sommer)
+library(emmeans)
+library(lme4)
+library(tidyverse)
+library(openxlsx)
+library(stringr)
+
+
+```
+
+# 2020
+
+## Load data
+
+```{r load data}
+
+
+PT_data <- read.csv(file = "../../data/PT_cleaneddata_AM.csv")
+NIRS_data20 <- openxlsx::read.xlsx("../../data/UAV/Windeby2020/UAVallData.xlsx", sheet = 1)
+
+```
+
+## PCOA 2020 NIRS data
+
+```{r data wrangling}
+
+# Phenotype data of 2020 WIN
+PT_data20 <- PT_data %>% 
+  filter(year == "2020",
+         loc == "WIN") %>% 
+  arrange(Reihe, Beet)
+
+
+## All channels, all Überflugsdaten of 2020
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::select("Beet" = ROW,   
+         "Reihe" = COL, 
+         matches("C[0-9]_MEAN.D[0-9]")) %>% 
+  dplyr::mutate(across(C1_MEAN.D2:C6_MEAN.D4, scale, center = TRUE, scale = TRUE)) %>% 
+  # Unifying genotype names
+  right_join(PT_data20, by = c("Beet", "Reihe")) %>% 
+  dplyr::arrange(Reihe, Beet) 
+
+
+
+```
+
+
+```{r}
+
+NIRS20.pca <- prcomp(NIRS_data20[grep("C[0-9]_MEAN.D[0-9]", names(NIRS_data20))])
+
+summary(NIRS20.pca) # 60% of variance explained through first two PCs
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::mutate(pcoa.x = NIRS20.pca$x[,1],
+         pcoa.y = NIRS20.pca$x[,2])
+
+ggplot(NIRS_data20, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3)
+
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot(NIRS_data20, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20.pca)$importance[2,][2], 4)*100,"%)"))
+
+
+point_colors = c("white","yellow","grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "black", "pink")
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::mutate(FST = as.factor(FST))
+
+ggplot(NIRS_data20, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = FST)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of NIRS data WIN20 where each channel + Ueberflugsdatum\n combination is on PC") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+NIRS_data20 %>% 
+  group_by(Block) %>% 
+  summarise(mean_C1_MEAN.D2 = mean(C1_MEAN.D2),
+            mean_C2_MEAN.D2 = mean(C2_MEAN.D2),
+            mean_C3_MEAN.D2 = mean(C3_MEAN.D2),
+            mean_C4_MEAN.D2 = mean(C4_MEAN.D2),
+            mean_C5_MEAN.D2 = mean(C5_MEAN.D2),
+            mean_C6_MEAN.D2 = mean(C6_MEAN.D2),
+            mean_C1_MEAN.D3 = mean(C1_MEAN.D3),
+            mean_C2_MEAN.D3 = mean(C2_MEAN.D3),
+            mean_C3_MEAN.D3 = mean(C3_MEAN.D3),
+            mean_C4_MEAN.D3 = mean(C4_MEAN.D3),
+            mean_C5_MEAN.D3 = mean(C5_MEAN.D3),
+            mean_C6_MEAN.D3 = mean(C6_MEAN.D3),
+            mean_C1_MEAN.D4 = mean(C1_MEAN.D4),
+            mean_C2_MEAN.D4 = mean(C2_MEAN.D4),
+            mean_C3_MEAN.D4 = mean(C3_MEAN.D4),
+            mean_C4_MEAN.D4 = mean(C4_MEAN.D4),
+            mean_C5_MEAN.D4 = mean(C5_MEAN.D4),
+            mean_C6_MEAN.D4 = mean(C6_MEAN.D4)) #
+
+NIRS_data20_wo8 <-  NIRS_data20 %>% 
+  filter(Block != 8)
+
+NIRS20_wo8.pca <- prcomp(NIRS_data20_wo8[grep("C[0-9]_MEAN.D[0-9]", names(NIRS_data20_wo8))])
+
+summary(NIRS20_wo8.pca) # 
+
+ggplot(NIRS_data20_wo8, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20_wo8.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20_wo8.pca)$importance[2,][2], 4)*100,"%)")) 
+
+NIRS_data20_DX <- NIRS_data20 %>% 
+  pivot_longer(cols = matches("C[0-9]_MEAN.D[0-9]"),
+               names_to = c(".value",'groupid'),
+               names_pattern = "(C[0-9]_MEAN.)(D[0-9])") %>% 
+  dplyr::rename("Ueberflugsdatum" = "groupid")
+
+
+NIRS20_DX.pca <- prcomp(NIRS_data20_DX[grep("C[0-9]_MEAN.", names(NIRS_data20_DX))])
+
+summary(NIRS20_DX.pca) # 60% of variance explained through first two PCs
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(pcoa.xX = NIRS20_DX.pca$x[,1],
+         pcoa.yX = NIRS20_DX.pca$x[,2])
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot(NIRS_data20_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 4,
+             aes(fill = Block)) +
+  theme_minimal() + 
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels for WIN 2020") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(text = element_text(size = 18)) 
+
+
+
+# color now per Überflugsdatum
+
+point_colors = c("grey66", "magenta1", "green3")
+
+ggplot(NIRS_data20_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Ueberflugsdatum)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(FST = as.factor(FST))
+
+point_colors = c("white","yellow","grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "black", "pink")
+
+ggplot(NIRS_data20_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = FST)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+## Let's see how a PCoA of the PTWIN20 data looks like per block:
+
+
+traits <- names(PT_data20 %>% dplyr::select(
+         AUF,
+         AUG,
+         EIN,
+         ENT,
+         ENT.II,
+         ERT_adj,
+         FORM.L,
+         FORM.Q,
+         KNG,
+         RFE,
+         RHI,
+         SCH,
+         SCO,
+         STAE,
+         PPO,
+         SFL,
+         KON,
+         GES,
+         GRA,
+         ZW,
+         WR,
+         U.pop,
+         N.pop,
+         UE.pop))
+
+
+PTWIN20.pca <- prcomp(na.omit(PT_data20[c(traits)]),
+                      center = TRUE, 
+                      scale = TRUE)
+
+
+summary(PTWIN20.pca)
+
+
+PT_data20_om <- na.omit(PT_data20[c(traits, "Block")]) %>% 
+  dplyr::mutate(pcoa.x = PTWIN20.pca$x[,1],
+         pcoa.y = PTWIN20.pca$x[,2])
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+PT_data20_om <- PT_data20_om %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot( PT_data20_om, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(PTWIN20.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(PTWIN20.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of WIN20 PT data all 24 traits") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+# Not much variance explained by the PCs. lets shrink the number of PCs
+
+
+traits <- names(PT_data20 %>% dplyr::select(
+         AUF,
+         AUG,
+         #EIN,
+         ENT,
+         ENT.II,
+         ERT_adj,
+         #FORM.L,
+         #FORM.Q,
+         KNG,
+         RFE,
+         #RHI,
+         #SCH,
+         #SCO,
+         STAE,
+         PPO,
+         #SFL,
+         #KON,
+         #GES,
+         #GRA,
+         #ZW,
+         #WR,
+         #U.pop,
+         #N.pop,
+         #UE.pop
+         ))
+
+
+
+PTWIN20.pca <- prcomp(na.omit(PT_data20[c(traits)]),
+                      center = TRUE, 
+                      scale = TRUE)
+
+
+summary(PTWIN20.pca)
+
+
+PT_data20_om <- na.omit(PT_data20[c(traits, "Block")]) %>% 
+  dplyr::mutate(pcoa.x = PTWIN20.pca$x[,1],
+         pcoa.y = PTWIN20.pca$x[,2])
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+PT_data20_om <- PT_data20_om %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot( PT_data20_om, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(PTWIN20.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(PTWIN20.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of WIN20 PT data 9 traits") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+```
+
+
+## Finding the points in the two plots
+
+
+```{r find out which points correspond to the outleirs}
+
+NIRS_data20 <- openxlsx::read.xlsx("../../data/UAV/Windeby2020/UAVallData.xlsx", sheet = 1)
+
+## All channels, all Überflugsdaten of 2020
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::select("Beet" = ROW,
+         "Reihe" = COL,
+         matches("C[0-9]_MEAN.D[0-9]")) %>% 
+  dplyr::mutate(across(C1_MEAN.D2:C6_MEAN.D4, scale, center = TRUE, scale = TRUE)) %>% 
+  # Unifying genotype names
+  right_join(PT_data20, by = c("Beet", "Reihe")) %>% 
+  arrange(Reihe, Beet) 
+
+
+
+NIRS20.pca <- prcomp(NIRS_data20[grep("C[0-9]_MEAN.D[0-9]", names(NIRS_data20))])
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::mutate(pcoa.x = NIRS20.pca$x[,1],
+         pcoa.y = NIRS20.pca$x[,2])
+
+
+
+NIRS_data20_DX <- NIRS_data20 %>% 
+  pivot_longer(cols = matches("C[0-9]_MEAN.D[0-9]"),
+               names_to = c(".value",'groupid'),
+               names_pattern = "(C[0-9]_MEAN.)(D[0-9])") %>% 
+  dplyr::rename("Ueberflugsdatum" = "groupid")
+
+
+NIRS20_DX.pca <- prcomp(NIRS_data20_DX[grep("C[0-9]_MEAN.", names(NIRS_data20_DX))])
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(pcoa.xX = NIRS20_DX.pca$x[,1],
+         pcoa.yX = NIRS20_DX.pca$x[,2])
+
+
+## which points are outliers in both plots?
+
+NIRS_data20_DX %>% 
+  filter(pcoa.yX < -4) %>% .$X
+
+NIRS_data20 %>% 
+  filter(pcoa.x < -2.5 & pcoa.y < -0.5) %>% .$X #
+
+
+outliers <- NIRS_data20 %>% 
+  filter(pcoa.x < -2.5 & pcoa.y < -0.5) %>% .$X
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(outlier = case_when(X %in% outliers & Ueberflugsdatum == "D3" ~ "TRUE",
+                             TRUE ~ "FALSE"))
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::mutate(outlier = case_when(X %in% outliers  ~ "TRUE",
+                             TRUE ~ "FALSE"))
+
+
+point_colors = c("red", "deepskyblue2")
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(outlier = as.factor(outlier))
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::mutate(outlier = as.factor(outlier))
+
+
+ggplot(NIRS_data20, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = outlier)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 18 channels x Ueberflugsdatum combinations") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+ggplot(NIRS_data20_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = outlier)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+```
+
+## Outlier removal
+
+
+```{r Outlier removal}
+
+NIRS_data20 <- openxlsx::read.xlsx("../../data/UAV/Windeby2020/UAVallData.xlsx", sheet = 1)
+
+## All channels, all Überflugsdaten of 2020
+
+NIRS_data20 <- NIRS_data20 %>% 
+  dplyr::select("Beet" = ROW,
+         "Reihe" = COL,
+         matches("C[0-9]_MEAN.D[0-9]")) %>% 
+  dplyr::mutate(across(C1_MEAN.D2:C6_MEAN.D4, scale, center = TRUE, scale = TRUE)) %>% 
+  # Unifying genotype names
+  right_join(PT_data20, by = c("Beet", "Reihe")) %>% 
+  arrange(Reihe, Beet) 
+
+
+NIRS_data20_DX <- NIRS_data20 %>% 
+  pivot_longer(cols = matches("C[0-9]_MEAN.D[0-9]"),
+               names_to = c(".value",'groupid'),
+               names_pattern = "(C[0-9]_MEAN.)(D[0-9])") %>% 
+  dplyr::rename("Ueberflugsdatum" = "groupid")
+
+
+NIRS20_DX.pca <- prcomp(NIRS_data20_DX[grep("C[0-9]_MEAN.", names(NIRS_data20_DX))])
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(pcoa.xX = NIRS20_DX.pca$x[,1],
+         pcoa.yX = NIRS20_DX.pca$x[,2])
+
+## plot
+
+
+ggplot(NIRS_data20_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 3) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+## which points will be removed?
+
+
+outliers <- NIRS_data20_DX %>% 
+  filter(pcoa.yX < -4 | pcoa.xX < -5) %>% 
+  dplyr::mutate(ID = paste0(Beet, "-", Reihe, Ueberflugsdatum),
+                outlier = TRUE) %>% 
+  dplyr::select(ID, outlier)
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(ID = paste0(Beet, "-", Reihe, Ueberflugsdatum)) %>% 
+  left_join(outliers, by = "ID")
+
+
+point_colors = c("red", "deepskyblue2")
+
+NIRS_data20_DX <- NIRS_data20_DX %>% 
+  dplyr::mutate(outlier = as.factor(outlier))
+
+
+ggplot(NIRS_data20_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = outlier)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS20_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+## Remove outliers
+  
+
+cleaned_NIRS20_Data <- NIRS_data20_DX %>% 
+  dplyr::mutate(across(`C1_MEAN.`:`C6_MEAN.`, 
+                       ~ case_when(outlier == TRUE ~ NA_real_, 
+                       TRUE ~ .))) %>% 
+  dplyr::select(-pcoa.xX,
+                -pcoa.yX,
+                -ID,
+                -outlier) %>% 
+  pivot_wider(names_from = Ueberflugsdatum,
+              values_from = c(`C1_MEAN.`,
+                              `C2_MEAN.`,
+                              `C3_MEAN.`,
+                              `C4_MEAN.`,
+                              `C5_MEAN.`,
+                              `C6_MEAN.`),
+              names_glue = "{.value}{Ueberflugsdatum}")
+
+
+write.csv(cleaned_NIRS20_Data, "../../data/UAV/Windeby2020/cleaned_NIRS20_Data_after_PCoA.csv")
+
+
+```
+
+# 2021
+## PCOA 2021 multispectral data
+
+
+```{r}
+
+rm(list = ls())
+
+PT_data <- read.csv(file = "../../data/PT_cleaneddata_AM.csv")
+NIRS_data20 <- openxlsx::read.xlsx("../../data/UAV/Windeby2020/UAVallData.xlsx", sheet = 1)
+NIRS_data21_mfr <- openxlsx::read.xlsx("../../data/UAV/Windeby2021/LP_mfr-msp_21_Drohnenergebnisse.xlsx", sheet = 2)
+NIRS_data21_sfr <- openxlsx::read.xlsx("../../data/UAV/Windeby2021/LP_sfr-fr_21_Drohnenergebnisse.xlsx", sheet = 2)
+
+```
+
+```{r data wrangling 21}
+
+# Phenotype data of 2021 WIN
+PT_data21 <- PT_data %>% 
+  filter(year == "2021",
+         loc == "WIN") %>% 
+  arrange(Reihe, Beet)
+
+
+## All channels, all Überflugsdaten of 2020
+cols <- 
+names(NIRS_data21_mfr)[NIRS_data21_mfr %>% 
+                       names() %>% 
+                       grep(. , pattern = ("D[0-9]\\.\\-\\.C[0-9]\\.\\-\\.MCA\\.\\(MEAN\\)"))
+                      ]
+
+
+colnames <- c("C1_MEAN.D2",
+              "C2_MEAN.D2",
+              "C3_MEAN.D2",
+              "C4_MEAN.D2",
+              "C5_MEAN.D2",
+              "C6_MEAN.D2",
+              "C1_MEAN.D3",
+              "C2_MEAN.D3",
+              "C3_MEAN.D3",
+              "C4_MEAN.D3",
+              "C5_MEAN.D3",
+              "C6_MEAN.D3",
+              "C1_MEAN.D4",
+              "C2_MEAN.D4",
+              "C3_MEAN.D4",
+              "C4_MEAN.D4",
+              "C5_MEAN.D4",
+              "C6_MEAN.D4")
+
+
+NIRS_data21 <- NIRS_data21_mfr %>% 
+  dplyr::select("Beet" = COL,
+         "Reihe" = ROW,
+         matches("D[0-9]\\.\\-\\.C[0-9]\\.\\-\\.MCA\\.\\(MEAN\\)")) %>% 
+  dplyr::rename("C1_MEAN.D2" = `D2.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D2" = `D2.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D2" = `D2.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D2" = `D2.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D2" = `D2.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D2" = `D2.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D3" = `D3.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D3" = `D3.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D3" = `D3.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D3" = `D3.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D3" = `D3.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D3" = `D3.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D4" = `D4.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D4" = `D4.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D4" = `D4.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D4" = `D4.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D4" = `D4.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D4" = `D4.-.C6.-.MCA.(MEAN)`) %>% 
+  # Unifying genotype names
+  right_join(PT_data21 %>% 
+                filter(Reife == "mfrms"), 
+             by = c("Beet", "Reihe")) %>% 
+  bind_rows(NIRS_data21_sfr %>% 
+  dplyr::select("Beet" = COL,
+         "Reihe" = ROW,
+         matches("D[0-9]\\.\\-\\.C[0-9]\\.\\-\\.MCA\\.\\(MEAN\\)")) %>% 
+  dplyr::rename("C1_MEAN.D2" = `D2.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D2" = `D2.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D2" = `D2.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D2" = `D2.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D2" = `D2.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D2" = `D2.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D3" = `D3.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D3" = `D3.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D3" = `D3.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D3" = `D3.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D3" = `D3.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D3" = `D3.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D4" = `D4.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D4" = `D4.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D4" = `D4.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D4" = `D4.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D4" = `D4.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D4" = `D4.-.C6.-.MCA.(MEAN)`) %>% 
+  # Unifying genotype names
+  right_join(PT_data21 %>% 
+               filter(Reife == "sfrfr") %>% 
+               # add block enumeration
+               dplyr::mutate(Block = Block + 5), 
+             by = c("Beet", "Reihe"))) %>% 
+  dplyr::select(-contains("C4")) %>% 
+  dplyr::mutate(across(C1_MEAN.D2:C6_MEAN.D4, scale, center = TRUE, scale = TRUE))
+
+  
+
+
+
+```
+
+
+```{r}
+
+NIRS21.pca <- prcomp(NIRS_data21[grep("C[0-9]_MEAN.D[0-9]", names(NIRS_data21))])
+
+summary(NIRS21.pca) # 60% of variance explained through first two PCs
+
+NIRS_data21 <- NIRS_data21 %>% 
+  dplyr::mutate(pcoa.x = NIRS21.pca$x[,1],
+         pcoa.y = NIRS21.pca$x[,2])
+
+ggplot(NIRS_data21, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3) 
+
+
+NIRS_data21 %>% 
+  filter(pcoa.x < 0 & pcoa.y < -2) 
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+NIRS_data21 <- NIRS_data21 %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot(NIRS_data21, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21.pca)$importance[2,][2], 4)*100,"%)"))
+
+# No systematic according to Block
+
+
+point_colors = c("magenta1", "green3")
+
+ggplot(NIRS_data21, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Reife)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21.pca)$importance[2,][2], 4)*100,"%)"))
+
+
+
+df <- NIRS_data21 %>% 
+  group_by(G) %>% 
+  summarise(mean_C1_MEAN.D2 = mean(C1_MEAN.D2),
+            mean_C2_MEAN.D2 = mean(C2_MEAN.D2),
+            mean_C3_MEAN.D2 = mean(C3_MEAN.D2),
+            mean_C5_MEAN.D2 = mean(C5_MEAN.D2),
+            mean_C6_MEAN.D2 = mean(C6_MEAN.D2),
+            mean_C1_MEAN.D3 = mean(C1_MEAN.D3),
+            mean_C2_MEAN.D3 = mean(C2_MEAN.D3),
+            mean_C3_MEAN.D3 = mean(C3_MEAN.D3),
+            mean_C5_MEAN.D3 = mean(C5_MEAN.D3),
+            mean_C6_MEAN.D3 = mean(C6_MEAN.D3),
+            mean_C1_MEAN.D4 = mean(C1_MEAN.D4),
+            mean_C2_MEAN.D4 = mean(C2_MEAN.D4),
+            mean_C3_MEAN.D4 = mean(C3_MEAN.D4),
+            mean_C5_MEAN.D4 = mean(C5_MEAN.D4),
+            mean_C6_MEAN.D4 = mean(C6_MEAN.D4)) %>% 
+  pivot_longer(cols = c(mean_C1_MEAN.D2:mean_C6_MEAN.D4), names_to = "channel_x_day" )
+
+
+# FST
+
+point_colors = c("white","yellow","grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "black", "pink")
+
+NIRS_data21 <- NIRS_data21 %>% 
+  dplyr::mutate(FST = as.factor(FST))
+
+ggplot(NIRS_data21, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = FST)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of NIRS data WIN21 where each channel + Ueberflugsdatum\n combination is on PC") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+
+
+# pivot longer with 3 observations per individual (individual + Überflugsdatum)
+
+NIRS_data21_DX <- NIRS_data21 %>% 
+  pivot_longer(cols = matches("C[0-9]_MEAN.D[0-9]"),
+               names_to = c(".value",'groupid'),
+               names_pattern = "(C[0-9]_MEAN.)(D[0-9])") %>% 
+  dplyr::rename("Ueberflugsdatum" = "groupid")
+
+
+NIRS21_DX.pca <- prcomp(NIRS_data21_DX[grep("C[0-9]_MEAN.", names(NIRS_data21_DX))])
+
+summary(NIRS21_DX.pca) # 98% of variance explained through first two PCs
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(pcoa.x = NIRS21_DX.pca$x[,1],
+         pcoa.y = NIRS21_DX.pca$x[,2])
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot(NIRS_data21_DX, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 5 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+# Now color per Überflugsdatum
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(Ueberflugsdatum = as.factor(Ueberflugsdatum))
+
+ggplot(NIRS_data21_DX, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Ueberflugsdatum)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 5 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+# FST for elongated table
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(FST = as.factor(FST))
+
+point_colors = c("white","yellow","grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "black", "pink")
+
+ggplot(NIRS_data21_DX, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = FST)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+# Reife for elongated table
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(Reife = as.factor(Reife))
+
+point_colors = c("red", "deepskyblue2")
+
+ggplot(NIRS_data21_DX, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Reife)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+## Let's see how a PCoA of the PTWIN21 data looks like per block:
+
+
+traits <- names(PT_data21 %>% dplyr::select(
+         AUF,
+         AUG,
+         EIN,
+         ENT,
+         ENT.II,
+         ERT_adj,
+         FORM.L,
+         FORM.Q,
+         KNG,
+         RFE,
+         RHI,
+         SCH,
+         SCO,
+         STAE,
+         PPO,
+         SFL,
+         KON,
+         GES,
+         GRA,
+         ZW,
+         WR,
+         U.pop,
+         N.pop,
+         UE.pop))
+
+
+PTWIN21.pca <- prcomp(na.omit(NIRS_data21[c(traits)]),
+                      center = TRUE, 
+                      scale = TRUE)
+
+
+summary(PTWIN21.pca) # not much variance explained
+
+
+PT_data21_om <- na.omit(NIRS_data21[c(traits, "Block")]) %>% 
+  dplyr::mutate(pcoa.x = PTWIN21.pca$x[,1],
+         pcoa.y = PTWIN21.pca$x[,2])
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+PT_data21_om <- PT_data21_om %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot( PT_data21_om, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(PTWIN21.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(PTWIN21.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of WIN21 PT data all 24 traits") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+
+# Not much variance explained by the PCs. lets shrink the number of PCs
+
+
+traits <- names(PT_data21 %>% dplyr::select(
+         AUF,
+         AUG,
+         #EIN,
+         ENT,
+         ENT.II,
+         ERT_adj,
+         #FORM.L,
+         #FORM.Q,
+         KNG,
+         RFE,
+         #RHI,
+         #SCH,
+         #SCO,
+         STAE,
+         PPO,
+         #SFL,
+         #KON,
+         #GES,
+         #GRA,
+         #ZW,
+         #WR,
+         #U.pop,
+         #N.pop,
+         #UE.pop
+         ))
+
+
+
+PTWIN21.pca <- prcomp(na.omit(NIRS_data21[c(traits)]),
+                      center = TRUE, 
+                      scale = TRUE)
+
+
+summary(PTWIN21.pca) # more variance explained
+
+
+PT_data21_om <- na.omit(NIRS_data21[c(traits, "Block")]) %>% 
+  dplyr::mutate(pcoa.x = PTWIN21.pca$x[,1],
+         pcoa.y = PTWIN21.pca$x[,2])
+
+
+point_colors = c("grey66", "magenta1", "green3", "red", "deepskyblue2", "khaki2", "white", "black")
+
+PT_data21_om <- PT_data21_om %>% 
+  dplyr::mutate(Block = as.factor(Block))
+
+ggplot( PT_data21_om, aes(pcoa.x, pcoa.y)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = Block)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(PTWIN21.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(PTWIN21.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of WIN21 PT data 9 traits") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+```
+
+## Outlier removal
+
+### Reload data
+
+```{r}
+
+rm(list = ls())
+
+PT_data <- read.csv(file = "../../data/PT_cleaneddata_AM.csv")
+NIRS_data20 <- openxlsx::read.xlsx("../../data/UAV/Windeby2020/UAVallData.xlsx", sheet = 1)
+NIRS_data21_mfr <- openxlsx::read.xlsx("../../data/UAV/Windeby2021/LP_mfr-msp_21_Drohnenergebnisse.xlsx", sheet = 2)
+NIRS_data21_sfr <- openxlsx::read.xlsx("../../data/UAV/Windeby2021/LP_sfr-fr_21_Drohnenergebnisse.xlsx", sheet = 2)
+
+```
+
+```{r data wrangling 21_2}
+
+# Phenotype data of 2021 WIN
+PT_data21 <- PT_data %>% 
+  filter(year == "2021",
+         loc == "WIN") %>% 
+  arrange(Reihe, Beet)
+
+
+## All channels, all Überflugsdaten of 2020
+cols <- 
+names(NIRS_data21_mfr)[NIRS_data21_mfr %>% 
+                       names() %>% 
+                       grep(. , pattern = ("D[0-9]\\.\\-\\.C[0-9]\\.\\-\\.MCA\\.\\(MEAN\\)"))
+                      ]
+
+
+colnames <- c("C1_MEAN.D2",
+              "C2_MEAN.D2",
+              "C3_MEAN.D2",
+              "C4_MEAN.D2",
+              "C5_MEAN.D2",
+              "C6_MEAN.D2",
+              "C1_MEAN.D3",
+              "C2_MEAN.D3",
+              "C3_MEAN.D3",
+              "C4_MEAN.D3",
+              "C5_MEAN.D3",
+              "C6_MEAN.D3",
+              "C1_MEAN.D4",
+              "C2_MEAN.D4",
+              "C3_MEAN.D4",
+              "C4_MEAN.D4",
+              "C5_MEAN.D4",
+              "C6_MEAN.D4")
+
+
+NIRS_data21 <- NIRS_data21_mfr %>% 
+  dplyr::select("Beet" = COL,
+         "Reihe" = ROW,
+         matches("D[0-9]\\.\\-\\.C[0-9]\\.\\-\\.MCA\\.\\(MEAN\\)")) %>% 
+  dplyr::rename("C1_MEAN.D2" = `D2.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D2" = `D2.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D2" = `D2.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D2" = `D2.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D2" = `D2.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D2" = `D2.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D3" = `D3.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D3" = `D3.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D3" = `D3.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D3" = `D3.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D3" = `D3.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D3" = `D3.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D4" = `D4.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D4" = `D4.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D4" = `D4.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D4" = `D4.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D4" = `D4.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D4" = `D4.-.C6.-.MCA.(MEAN)`) %>% 
+  # Unifying genotype names
+  right_join(PT_data21 %>% 
+                filter(Reife == "mfrms"), 
+             by = c("Beet", "Reihe")) %>% 
+  bind_rows(NIRS_data21_sfr %>% 
+  dplyr::select("Beet" = COL,
+         "Reihe" = ROW,
+         matches("D[0-9]\\.\\-\\.C[0-9]\\.\\-\\.MCA\\.\\(MEAN\\)")) %>% 
+  dplyr::rename("C1_MEAN.D2" = `D2.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D2" = `D2.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D2" = `D2.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D2" = `D2.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D2" = `D2.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D2" = `D2.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D3" = `D3.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D3" = `D3.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D3" = `D3.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D3" = `D3.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D3" = `D3.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D3" = `D3.-.C6.-.MCA.(MEAN)`,
+         "C1_MEAN.D4" = `D4.-.C1.-.MCA.(MEAN)`,
+         "C2_MEAN.D4" = `D4.-.C2.-.MCA.(MEAN)`,
+         "C3_MEAN.D4" = `D4.-.C3.-.MCA.(MEAN)`,
+         "C4_MEAN.D4" = `D4.-.C4.-.MCA.(MEAN)`,
+         "C5_MEAN.D4" = `D4.-.C5.-.MCA.(MEAN)`,
+         "C6_MEAN.D4" = `D4.-.C6.-.MCA.(MEAN)`) %>% 
+  # Unifying genotype names
+  right_join(PT_data21 %>% 
+               filter(Reife == "sfrfr") %>% 
+               # add block enumeration
+               dplyr::mutate(Block = Block + 5), 
+             by = c("Beet", "Reihe"))) %>% 
+  dplyr::select(-contains("C4")) %>% 
+  dplyr::mutate(across(C1_MEAN.D2:C6_MEAN.D4, scale, center = TRUE, scale = TRUE))
+
+  
+
+
+
+```
+
+### Analysis
+
+
+```{r Outlier removal 21}
+
+
+NIRS_data21_DX <- NIRS_data21 %>% 
+  pivot_longer(cols = matches("C[0-9]_MEAN.D[0-9]"),
+               names_to = c(".value",'groupid'),
+               names_pattern = "(C[0-9]_MEAN.)(D[0-9])") %>% 
+  dplyr::rename("Ueberflugsdatum" = "groupid")
+
+
+NIRS21_DX.pca <- prcomp(NIRS_data21_DX[grep("C[0-9]_MEAN.", names(NIRS_data21_DX))])
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(pcoa.xX = NIRS21_DX.pca$x[,1],
+         pcoa.yX = NIRS21_DX.pca$x[,2])
+
+## plot
+
+
+ggplot(NIRS_data21_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 3) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+## which points will be removed?
+
+
+outliers <- NIRS_data21_DX %>% 
+  filter((pcoa.xX > 3.9 & pcoa.yX > 0.1) | pcoa.xX > 4.2) %>% 
+  dplyr::mutate(ID = paste0(Beet, "-", Reihe, Reife, Ueberflugsdatum),
+                outlier = TRUE) %>% 
+  dplyr::select(ID, outlier)
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(ID = paste0(Beet, "-", Reihe, Reife, Ueberflugsdatum)) %>% 
+  left_join(outliers, by = "ID")
+
+
+point_colors = c("red", "deepskyblue2")
+
+NIRS_data21_DX <- NIRS_data21_DX %>% 
+  dplyr::mutate(outlier = as.factor(outlier))
+
+
+ggplot(NIRS_data21_DX, aes(pcoa.xX, pcoa.yX)) +
+  geom_point(colour="black", shape=21, size = 3,
+             aes(fill = outlier)) +
+  scale_fill_manual(values = point_colors) +
+  xlab(paste0("Principal coordinate 1 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][1], 4)*100,"%)")) +
+  ylab(paste0("Principal coordinate 2 (",
+              round(summary(NIRS21_DX.pca)$importance[2,][2], 4)*100,"%)")) +
+  ggtitle("PCoA of all 6 channels where each observation\n is a individual x Ueberflugsdatum combination") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+## Remove outliers
+  
+
+cleaned_NIRS21_Data <- NIRS_data21_DX %>% 
+  dplyr::mutate(across(`C1_MEAN.`:`C6_MEAN.`, 
+                       ~ case_when(outlier == TRUE ~ NA_real_, 
+                       TRUE ~ .))) %>% 
+  dplyr::select(-pcoa.xX,
+                -pcoa.yX,
+                -ID,
+                -outlier) %>% 
+  pivot_wider(names_from = Ueberflugsdatum,
+              values_from = c(`C1_MEAN.`,
+                              `C2_MEAN.`,
+                              `C3_MEAN.`,
+                              `C5_MEAN.`,
+                              `C6_MEAN.`),
+              names_glue = "{.value}{Ueberflugsdatum}")
+
+
+write.csv(cleaned_NIRS21_Data, "../../data/UAV/Windeby2021/cleaned_NIRS21_Data_after_PCoA.csv")
+
+
+```
+

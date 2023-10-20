@@ -1,0 +1,192 @@
+---
+title: "Impute missing channel data"
+author: "Alessio Maggiorelli"
+output: pdf_document
+---
+
+```{r script description}
+
+```
+
+
+```{r TO DO} 
+
+```
+
+
+```{r questions}
+
+```
+
+
+# Setup
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+
+```{r packages}
+
+library(sommer)
+library(emmeans)
+library(lme4)
+library(openxlsx)
+library(stringr)
+library(mice)
+library(tidyverse)
+library(mitools)
+
+```
+
+
+## Load NIRS data
+
+```{r}
+
+NIRS_20 <- read.csv("../../data/UAV/Windeby2020/cleaned_NIRS20_Data_after_PCoA.csv")
+NIRS_21 <- read.csv("../../data/UAV/Windeby2021/cleaned_NIRS21_Data_after_PCoA.csv")
+
+```
+
+## Preliminary data wrangling
+
+```{r}
+
+NIRS_20 <- NIRS_20 %>% 
+  # use nm as channelname
+  rename_with(~paste0("530nm", sub("C1", "", .)), 
+              starts_with('C1')) %>% 
+  rename_with(~paste0("670nm", sub("C2", "", .)), 
+              starts_with('C2')) %>% 
+  rename_with(~paste0("700nm", sub("C3", "", .)), 
+              starts_with('C3')) %>% 
+  rename_with(~paste0("730nm", sub("C4", "", .)), 
+              starts_with('C4')) %>% 
+  rename_with(~paste0("780nm", sub("C5", "", .)), 
+              starts_with('C5')) %>% 
+  rename_with(~paste0("900nm", sub("C6", "", .)), 
+              starts_with('C6'))
+
+NIRS_21 <- NIRS_21 %>% 
+  # use nm as channelname
+  rename_with(~paste0("780nm", sub("C1", "", .)), 
+              starts_with('C1')) %>% 
+  rename_with(~paste0("530nm", sub("C2", "", .)), 
+              starts_with('C2')) %>% 
+  rename_with(~paste0("570nm", sub("C3", "", .)), 
+              starts_with('C3')) %>% 
+  rename_with(~paste0("700nm", sub("C5", "", .)), 
+              starts_with('C5')) %>% 
+  rename_with(~paste0("730nm", sub("C6", "", .)), 
+              starts_with('C6'))
+
+data <- NIRS_20 %>% 
+  bind_rows(NIRS_21)
+
+data_imp <- NIRS_20 %>% 
+  bind_rows(NIRS_21) %>% 
+  dplyr::select(G,
+                env_com,
+                `530nm_MEAN.D2`:`570nm_MEAN.D4`) %>% 
+  dplyr::mutate(across(G:env_com, as.factor))
+
+colnames(data_imp) <- make.names(colnames(data_imp))
+colnames(data) <- make.names(colnames(data))
+
+
+```
+
+## Imputation
+
+```{r}
+
+
+#define which values should be imputed
+wheredf <- data_imp %>% 
+  dplyr::mutate(across(X530nm_MEAN.D2:X570nm_MEAN.D4, ~case_when(is.na(.) ~ TRUE,
+                                                                 TRUE ~ FALSE))) %>% 
+  dplyr::mutate(across(G:env_com, ~FALSE))
+
+
+
+
+
+m <- 1
+imp <- mice::mice(data_imp, m = m,
+                  diagnostics = TRUE, 
+                  meth="pmm", 
+                  print = TRUE, 
+                  remove_collinear = FALSE,
+                  where = wheredf,
+                  seed = 1)
+
+
+imp_data <- complete(imp, 1)
+
+```
+
+## Attach to original data
+
+
+```{r}
+
+data <- data %>% 
+  dplyr::select(-X.1) %>% 
+  dplyr::mutate(X530nm_MEAN.D2_imp = imp_data$X530nm_MEAN.D2,
+                X530nm_MEAN.D3_imp = imp_data$X530nm_MEAN.D3,
+                X530nm_MEAN.D4_imp = imp_data$X530nm_MEAN.D4,
+                
+                X670nm_MEAN.D2_imp = imp_data$X670nm_MEAN.D2,
+                X670nm_MEAN.D3_imp = imp_data$X670nm_MEAN.D3,
+                X670nm_MEAN.D4_imp = imp_data$X670nm_MEAN.D4,
+                
+                X700nm_MEAN.D2_imp = imp_data$X700nm_MEAN.D2,
+                X700nm_MEAN.D3_imp = imp_data$X700nm_MEAN.D3,
+                X700nm_MEAN.D4_imp = imp_data$X700nm_MEAN.D4,
+                
+                X730nm_MEAN.D2_imp = imp_data$X730nm_MEAN.D2,
+                X730nm_MEAN.D3_imp = imp_data$X730nm_MEAN.D3,
+                X730nm_MEAN.D4_imp = imp_data$X730nm_MEAN.D4,
+                
+                X780nm_MEAN.D2_imp = imp_data$X780nm_MEAN.D2,
+                X780nm_MEAN.D3_imp = imp_data$X780nm_MEAN.D3,
+                X780nm_MEAN.D4_imp = imp_data$X780nm_MEAN.D4,
+                
+                X900nm_MEAN.D2_imp = imp_data$X900nm_MEAN.D2,
+                X900nm_MEAN.D3_imp = imp_data$X900nm_MEAN.D3,
+                X900nm_MEAN.D4_imp = imp_data$X900nm_MEAN.D4,
+                
+                X570nm_MEAN.D2_imp = imp_data$X570nm_MEAN.D2,
+                X570nm_MEAN.D3_imp = imp_data$X570nm_MEAN.D3,
+                X570nm_MEAN.D4_imp = imp_data$X570nm_MEAN.D4)
+
+
+```
+
+## Save multispectral data
+
+```{r}
+
+write.csv(data, "../../data/UAV/NIRS_Data_PMMimp_after_PCoA.csv")
+
+```
+
+
+```{r}
+
+```
+

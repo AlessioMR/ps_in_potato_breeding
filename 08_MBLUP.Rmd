@@ -1,0 +1,1470 @@
+---
+title: "PS-BLUP"
+author: "Alessio Maggiorelli"
+output: pdf_document
+---
+
+
+# Setup
+
+```{r, setup, include=FALSE}
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+```{r packages}
+
+library(data.table)
+library(sommer)
+library(emmeans)
+library(lme4)
+library(openxlsx)
+library(stringr)
+library(tidyverse)
+library(AGHmatrix)
+
+```
+
+
+## Load data
+
+```{r load data}
+
+# phenotype data
+PT_data <- read.csv(file = "../../data/PT_cleaneddata_expadj_AM.csv")
+# NIRS data
+H_data <- read.csv(file = "../../data/UAV/NIRS_Data_PMMimp_after_PCoA.csv")
+
+```
+
+## Define functions
+
+### Data wrangler
+
+```{r UDF data_wrangler}
+##########################################
+###      Data wrangling function       ###
+##########################################
+
+# This function funnels the input data (M and PT data) to the cross-validation function. It mainly searches for matching Genotypes, renames rows and columns and ***calculates the relationship_matrix M (also called H)***.
+
+
+
+data_wrangling_for_cv <- function(PT_data, H_data, trait){
+  
+  # PT_data = PT_AEM_list_sc1[["PT_WIN19"]]
+  # H_data = H_AEM_list_sc1[["H_WIN20"]]
+  # trait = traits_WIN19
+  
+  interG <- intersect(PT_data$G, H_data$G)
+  
+  # then filter PT data for matching Genotypes, arrange in G order and mutate the genotype column as a factor
+  PT_data <- PT_data %>% 
+  filter(G %in% interG) %>% 
+  dplyr::arrange(G) %>% 
+  dplyr::mutate(G = as.factor(G))
+  
+  PT_data$G <- droplevels(PT_data$G)
+  
+  rownames(PT_data) <- PT_data$G
+
+  H_data <- H_data %>% 
+    filter(G %in% interG) %>% 
+    dplyr::arrange(G)  
+  
+  # Convert multispectral data as matrix
+  H_matrix <- H_data %>% 
+  dplyr::select(-G) %>% 
+  as.matrix()
+  
+  # Rename column names to Genotype names for the multispectral matrix
+  rownames(H_matrix) <- PT_data$G
+  
+  # Calculate relationship matrix
+  H <- (H_matrix%*%t(H_matrix))/ncol(H_matrix)
+  
+  # Rename column and rownames of the relationship matrix to the Genotypes
+  colnames(H) <- PT_data$G
+  rownames(H) <- PT_data$G
+  
+  wrangled_data <- list(PT_data = PT_data, 
+                        H_matrix = H_matrix, 
+                        H = H, 
+                        trait_column = PT_data[,trait])
+  
+  return(wrangled_data)
+  
+}
+
+```
+
+
+### MBlup with cross-validation
+
+```{r UDF MBLUP with cross-validation}
+##########################################
+### X fold cross-validation function   ###
+##########################################
+
+# This function computes the M-Blup with cross validation. The number of folds and repititions are adjustable.
+
+
+cv <- function(phenotype_data, trait, H_data, folds = 5, relationship_matrix, repeats = 25){
+
+  
+  # phenotype_data = df$PT_data
+  # H_data = df$H_matrix
+  # folds = 5
+  # relationship_matrix = df$H
+  # trait = df$trait_column
+  # repeats = 25
+  # 
+  # create a new correlation object where every correlation result of the folds x repitition cv will be stored
+  cor1 <- NULL
+  
+  
+  # For every repeat:
+  for(r in 1:repeats){
+    
+    # r = 1
+    
+    # Set a new seed (reproducible sets) and split the data into 5 equal folds
+    set.seed(r)
+    set_in_random_order <- sample(H_data %>% nrow(), replace = FALSE)
+    sets <- split(set_in_random_order, cut(seq_along(set_in_random_order), folds, labels = FALSE))
+
+    # For every fold
+    for (i in 1:folds) {
+      
+      # i = 2
+      
+      # Reset the PT data
+      PT_dataset <- phenotype_data
+      
+      # Set the values for the IDs of the training column to NA (to be predicted)
+      train_column <- trait
+      train_column[sets[[i]]] <- NA
+      
+      # append the training column to the data
+      PT_dataset <- cbind(PT_dataset, train_column)
+      
+      # run the M-BLUP; the relationship matrix H is usually calculated beforehand in the function 'data_wrangling_for_cv'
+      fit <- mmer(fixed = train_column ~ 1,
+                  random = ~vsr(G, Gu = relationship_matrix),
+                  rcov = ~vsr(units),
+                  data = PT_dataset, verbose = F,
+                  date.warning = FALSE)
+      
+      # Calculate the estimated breeding values
+      GEBVs <- fit$Beta$Estimate + fit$U$`u:G`$train_column
+      validation_set_index <- match(phenotype_data$G[sets[[i]]], names(GEBVs))
+      
+      # calculate the correlation between the GEBVs and the predictions of the training column
+      cor1 <- c(cor1, cor(trait[sets[[i]]], GEBVs[validation_set_index], use = "pairwise.complete.obs"))
+    
+    }
+    
+    print(paste("Repeat", r))
+    
+  }
+  
+ return(cor1)
+  
+}
+
+
+
+```
+
+
+## Wrangle data
+
+```{r data wrangling}
+
+# In this code chunk the data will be molded into data packages for the analysis
+
+# Phenotype data of 2019 WIN
+PT_WIN19 <- PT_data %>% 
+  filter(year == "2019",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2020 WIN
+PT_WIN20 <- PT_data %>% 
+  filter(year == "2020",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2021 WIN
+PT_WIN21 <- PT_data %>% 
+  filter(year == "2021",
+         loc == "WIN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2020 GRAN
+PT_GRAN20 <- PT_data %>% 
+  filter(year == "2020",
+         loc == "GRAN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# Phenotype data of 2021 GRAN
+PT_GRAN21 <- PT_data %>% 
+  filter(year == "2021",
+         loc == "GRAN") %>% 
+  dplyr::arrange(Reihe, Beet)
+
+
+# NIRS data of WIN 2020
+H_WIN20 <- H_data %>% 
+  filter(env_com == "WIN2020") %>% 
+  dplyr::select(Beet,
+                Reihe,
+                G,
+                env_com,
+                Reife,
+                Block,
+                Mutter,
+                Vater,
+                X530nm_MEAN.D2:X570nm_MEAN.D4_imp)
+
+
+
+# NIRS data of WIN 21
+H_WIN21 <- H_data %>% 
+  filter(env_com == "WIN2021") %>% 
+  dplyr::select(Beet,
+                Reihe,
+                G,
+                env_com,
+                Reife,
+                Block,
+                Mutter,
+                Vater,
+                X530nm_MEAN.D2:X570nm_MEAN.D4_imp)
+
+
+```
+
+## AEMs
+
+```{r AEMs}
+
+load("../results/AEMs/sc1_PT_AEMs_new.Rda")
+PT_AEM_list_sc1 <- AEM_list_sc1
+load("../results/AEMs/sc1_H_AEMs_new.Rda")
+H_AEM_list_sc1 <- AEM_list_sc1
+load("../results/AEMs/sc3_PT_AEMs_new.Rda")
+load("../results/AEMs/sc3_PT_AEMs_woWIN20_new.Rda")
+load("../results/AEMs/sc3_PT_AEMs_woWIN21_new.Rda")
+
+
+```
+
+
+## Traits analysed
+
+
+```{r}
+
+# For every PT dataset, depending on the year and location not every trait can be analysed (due to missing trait data)
+
+# In this code chunk we will find analysable trait data for each PT dataset
+
+#-----------------
+
+# These are the sets of all possible traits
+
+traits <- c(
+  "AUF_emmean",
+  "AUG_emmean",
+  "EIN_emmean",
+  "ENT_emmean",
+  "ENT.II_emmean",
+  "ERT_adj_emmean",
+  "FORM.L_emmean",
+  "FORM.Q_emmean",
+  "KNG_emmean",
+  "RFE_emmean",
+  "RHI_emmean",
+  "SCH_emmean",
+  "SCO_emmean",
+  "STAE_emmean",
+  "PPO_emmean",
+  "SFL_emmean",
+  "KON_emmean",
+  "GES_emmean",
+  "GRA_emmean",
+  #"ZW_emmean",
+  #"WR_emmean",
+  #"U.pop_emmean",
+  "U.pop_root_emmean",
+  "N.pop_emmean",
+  "UE.pop_emmean")
+
+# these are the analysable traits for each environment
+
+traits_WIN19 <- PT_AEM_list_sc1[["PT_WIN19"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_WIN20 <- PT_AEM_list_sc1[["PT_WIN20"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_WIN21 <- PT_AEM_list_sc1[["PT_WIN21"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+traits_GRAN20 <- PT_AEM_list_sc1[["PT_GRAN20"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_GRAN21 <- PT_AEM_list_sc1[["PT_GRAN21"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+
+#--------------
+
+traits_PTAEM <- AEM_list_sc3 %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+
+```
+
+
+
+# Scenario 1 and 2
+
+## Calculations H2020
+
+### PTWIN19 x HWIN20
+
+```{r}
+
+# predict WIN19 PT with WIN20 NIRS
+
+results_PTWIN19_HWIN20_per_trait <- list()
+  
+for (t in traits_WIN19) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN19"]],
+                              H_data = H_AEM_list_sc1[["H_WIN20"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN19_HWIN20_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN19_HWIN20_per_trait, 
+     file = "../results/H-BLUP/PTWIN19_x_HWIN20_new.Rda")
+
+
+```
+
+
+### PTWIN20 x HWIN20
+
+```{r}
+
+
+results_PTWIN20_HWIN20_per_trait <- list()
+  
+for (t in traits_WIN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN20"]],
+                              H_data = H_AEM_list_sc1[["H_WIN20"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN20_HWIN20_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN20_HWIN20_per_trait, 
+     file = "../results/H-BLUP/PTWIN20_x_HWIN20_new.Rda")
+
+
+```
+
+
+### PTWIN21 x HWIN20
+
+```{r}
+
+results_PTWIN21_HWIN20_per_trait <- list()
+  
+for (t in traits_WIN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN21"]],
+                              H_data = H_AEM_list_sc1[["H_WIN20"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN21_HWIN20_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN21_HWIN20_per_trait, 
+     file = "../results/H-BLUP/PTWIN21_x_HWIN20_new.Rda")
+
+
+```
+
+
+### PTGRAN20 x HWIN20
+
+```{r}
+
+
+results_PTGRAN20_HWIN20_per_trait <- list()
+  
+for (t in traits_GRAN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN20"]],
+                              H_data = H_AEM_list_sc1[["H_WIN20"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTGRAN20_HWIN20_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN20_HWIN20_per_trait, 
+     file = "../results/H-BLUP/PTGRAN20_x_HWIN20_new.Rda")
+
+
+
+```
+
+
+### PTGRAN21 x HWIN20
+
+```{r}
+
+# predict GRAN21 PT with WIN20 NIRS
+
+results_PTGRAN21_HWIN20_per_trait <- list()
+  
+for (t in traits_GRAN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN21"]],
+                              H_data = H_AEM_list_sc1[["H_WIN20"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTGRAN21_HWIN20_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN21_HWIN20_per_trait, 
+     file = "../results/H-BLUP/PTGRAN21_x_HWIN20_new.Rda")
+
+
+
+```
+
+
+## Calculations H2021
+
+### PTWIN19 x HWIN21
+
+```{r}
+
+results_PTWIN19_HWIN21_per_trait <- list()
+  
+for (t in traits_WIN19) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN19"]],
+                              H_data = H_AEM_list_sc1[["H_WIN21"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN19_HWIN21_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+save(results_PTWIN19_HWIN21_per_trait, 
+     file = "../results/H-BLUP/PTWIN19_x_HWIN21_new.Rda")
+
+
+```
+
+
+### PTWIN20 x HWIN21
+
+```{r}
+
+results_PTWIN20_HWIN21_per_trait <- list()
+  
+for (t in traits_WIN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN20"]],
+                              H_data = H_AEM_list_sc1[["H_WIN21"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN20_HWIN21_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+save(results_PTWIN20_HWIN21_per_trait, 
+     file = "../results/H-BLUP/PTWIN20_x_HWIN21_new.Rda")
+
+
+```
+
+
+### PTWIN21 x HWIN21
+
+```{r}
+
+results_PTWIN21_HWIN21_per_trait <- list()
+  
+for (t in traits_WIN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN21"]],
+                              H_data = H_AEM_list_sc1[["H_WIN21"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN21_HWIN21_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+save(results_PTWIN21_HWIN21_per_trait, 
+     file = "../results/H-BLUP/PTWIN21_x_HWIN21_new.Rda")
+
+
+```
+
+
+
+### PTGRAN20 x HWIN21
+
+```{r}
+
+results_PTGRAN20_HWIN21_per_trait <- list()
+  
+for (t in traits_GRAN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN20"]],
+                              H_data = H_AEM_list_sc1[["H_WIN21"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTGRAN20_HWIN21_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+save(results_PTGRAN20_HWIN21_per_trait, 
+     file = "../results/H-BLUP/PTGRAN20_x_HWIN21_new.Rda")
+
+
+```
+
+
+### PTGRAN21 x HWIN21
+
+```{r}
+
+results_PTGRAN21_HWIN21_per_trait <- list()
+  
+for (t in traits_GRAN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN21"]],
+                              H_data = H_AEM_list_sc1[["H_WIN21"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTGRAN21_HWIN21_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+save(results_PTGRAN21_HWIN21_per_trait, 
+     file = "../results/H-BLUP/PTGRAN21_x_HWIN21_new.Rda")
+
+
+```
+
+
+
+# Scenario 3
+
+## Calculate H2020
+
+```{r}
+
+# predict AEMs of PT data with WIN20 H data
+
+results_PTAEM_HWIN20_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = AEM_list_sc3,
+                              H_data = H_AEM_list_sc1[["H_WIN20"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTAEM_HWIN20_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEM_HWIN20_per_trait, 
+     file = "../results/H-BLUP/PTAEM_x_HWIN20_new.Rda")
+
+
+
+
+```
+
+
+
+
+## Calculate H2021
+
+```{r}
+
+# predict AEMs of PT data with WIN21 H data
+
+results_PTAEM_HWIN21_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = AEM_list_sc3,
+                              H_data = H_AEM_list_sc1[["H_WIN21"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTAEM_HWIN21_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEM_HWIN21_per_trait, 
+     file = "../results/H-BLUP/PTAEM_x_HWIN21_new.Rda")
+
+
+
+```
+
+
+# Scenario 3 without original env
+
+## Calculate H2020 and predict AEMs without PT2020
+
+```{r}
+
+# predict AEMs of PT data (AEMs were calculated witout WIN2020) with WIN20 multispectral data
+
+results_PTAEMwoWIN20_HWIN20_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for M-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = AEM_list_sc3_woWIN20,
+                              H_data = H_AEM_list_sc1[["H_WIN20"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv M-BLUP for every trait of the PT_data environment
+  results_PTAEMwoWIN20_HWIN20_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEMwoWIN20_HWIN20_per_trait, 
+     file = "../results/H-BLUP/PTAEMwoWIN20_x_HWIN20_new.Rda")
+
+
+
+
+```
+
+
+## Calculate H2021 and predict AEMs without PT2021
+
+```{r}
+
+# predict AEMs of PT data (AEMs were calculated witout WIN2020) with WIN20 multispectral data
+
+results_PTAEMwoWIN21_HWIN21_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for M-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = AEM_list_sc3_woWIN21,
+                              H_data = H_AEM_list_sc1[["H_WIN21"]],
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv M-BLUP for every trait of the PT_data environment
+  results_PTAEMwoWIN21_HWIN21_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEMwoWIN21_HWIN21_per_trait, 
+     file = "../results/H-BLUP/PTAEMwoWIN21_x_HWIN21_new.Rda")
+
+
+
+
+```
+
+
+
+# Scenario 4.1 AEMs
+
+## Load AEMs
+
+```{r}
+
+load("../results/AEMs/sc4_H_AEMs_new.Rda")
+
+
+```
+
+
+## Traits analysed
+
+
+```{r}
+
+# For every PT dataset, depending on the year and location not every trait can be analysed (due to missing trait data)
+
+# In this code chunk we will find analysable trait data for each PT dataset
+
+#-----------------
+
+# These are the sets of all possible traits
+
+traits <- c(
+  "AUF_emmean",
+  "AUG_emmean",
+  "EIN_emmean",
+  "ENT_emmean",
+  "ENT.II_emmean",
+  "ERT_adj_emmean",
+  "FORM.L_emmean",
+  "FORM.Q_emmean",
+  "KNG_emmean",
+  "RFE_emmean",
+  "RHI_emmean",
+  "SCH_emmean",
+  "SCO_emmean",
+  "STAE_emmean",
+  "PPO_emmean",
+  "SFL_emmean",
+  "KON_emmean",
+  "GES_emmean",
+  "GRA_emmean",
+  #"ZW_emmean",
+  #"WR_emmean",
+  #"U.pop_emmean",
+  "U.pop_root_emmean",
+  "N.pop_emmean",
+  "UE.pop_emmean")
+
+# these are the analysable traits for PT AEM data
+
+traits_PTAEM <- AEM_list_sc3 %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+
+# these are the analysable traits for each environment
+
+traits_WIN19 <- PT_AEM_list_sc1[["PT_WIN19"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_WIN20 <- PT_AEM_list_sc1[["PT_WIN20"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_WIN21 <- PT_AEM_list_sc1[["PT_WIN21"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+traits_GRAN20 <- PT_AEM_list_sc1[["PT_GRAN20"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+traits_GRAN21 <- PT_AEM_list_sc1[["PT_GRAN21"]] %>%
+  dplyr::select(-G) %>% 
+  names()
+
+
+
+```
+
+
+
+## Single ENVs
+
+### PTWIN19 x HAEM
+
+```{r}
+
+# predict PTWIN19 with H AEMs data
+
+results_PTWIN19_HAEM_per_trait <- list()
+  
+for (t in traits_WIN19) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN19"]],
+                              H_data = AEM_list_sc4,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN19_HAEM_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN19_HAEM_per_trait, 
+     file = "../results/H-BLUP/PTWIN19_x_HAEM_new.Rda")
+
+
+
+
+```
+
+
+
+### PTWIN20 x HAEM
+
+```{r}
+
+results_PTWIN20_HAEM_per_trait <- list()
+  
+for (t in traits_WIN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN20"]],
+                              H_data = AEM_list_sc4,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN20_HAEM_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN20_HAEM_per_trait, 
+     file = "../results/H-BLUP/PTWIN20_x_HAEM_new.Rda")
+
+
+
+
+```
+
+
+
+### PTWIN21 x HAEM
+
+```{r}
+
+results_PTWIN21_HAEM_per_trait <- list()
+  
+for (t in traits_WIN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN21"]],
+                              H_data = AEM_list_sc4,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTWIN21_HAEM_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN21_HAEM_per_trait, 
+     file = "../results/H-BLUP/PTWIN21_x_HAEM_new.Rda")
+
+
+
+
+```
+
+
+### PTGRAN20 x HAEM
+
+```{r}
+
+results_PTGRAN20_HAEM_per_trait <- list()
+  
+for (t in traits_GRAN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN20"]],
+                              H_data = AEM_list_sc4,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTGRAN20_HAEM_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN20_HAEM_per_trait, 
+     file = "../results/H-BLUP/PTGRAN20_x_HAEM_new.Rda")
+
+
+
+
+```
+
+
+### PTGRAN21 x HAEM
+
+```{r}
+
+results_PTGRAN21_HAEM_per_trait <- list()
+  
+for (t in traits_GRAN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN21"]],
+                              H_data = AEM_list_sc4,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTGRAN21_HAEM_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN21_HAEM_per_trait, 
+     file = "../results/H-BLUP/PTGRAN21_x_HAEM_new.Rda")
+
+
+
+
+```
+
+## AEM ENV
+
+### PTAEM x HAEM
+
+```{r}
+
+results_PTAEM_HAEM_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = AEM_list_sc3,
+                              H_data = AEM_list_sc4,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTAEM_HAEM_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEM_HAEM_per_trait, 
+     file = "../results/H-BLUP/PTAEM_x_HAEM_new.Rda")
+
+
+
+
+```
+
+
+# Scenario 4.2 c-join
+
+## Wrangling
+
+```{r}
+# in this scenario the multispectral data of both environments will be combined by using each env x channel combination as a new predictor (column joining). That means we have to search for matching Genotypes that occur in both years
+names(AEM_list_sc1$H_WIN20) <- paste0(names(AEM_list_sc1$H_WIN20), "_WIN20")
+names(AEM_list_sc1$H_WIN21) <- paste0(names(AEM_list_sc1$H_WIN21), "_WIN21")
+  
+AEM_list_sc4.2 <- AEM_list_sc1$H_WIN20 %>% 
+  cbind(AEM_list_sc1$H_WIN21) %>% 
+  dplyr::select("G" = G_WIN20,
+                everything(),
+                -G_WIN21)
+
+
+
+```
+
+
+## Single ENVs
+
+### PTWIN19 x cjH
+
+```{r}
+
+# predict PTWIN19 with column joined H data of both envs
+
+results_PTWIN19_cjH_per_trait <- list()
+  
+for (t in traits_WIN19) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN19"]],
+                              H_data = AEM_list_sc4.2,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment but with the newly build column-joined relationship matrix 
+  results_PTWIN19_cjH_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN19_cjH_per_trait, 
+     file = "../results/H-BLUP/PTWIN19_x_cjH_new.Rda")
+
+
+```
+
+
+### PTWIN20 x cjH
+
+```{r}
+
+
+results_PTWIN20_cjH_per_trait <- list()
+  
+for (t in traits_WIN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN20"]],
+                              H_data = AEM_list_sc4.2,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment but with the newly build column-joined relationship matrix 
+  results_PTWIN20_cjH_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN20_cjH_per_trait, 
+     file = "../results/H-BLUP/PTWIN20_x_cjH_new.Rda")
+
+
+```
+
+
+
+### PTWIN21 x cjH
+
+```{r}
+
+
+results_PTWIN21_cjH_per_trait <- list()
+  
+for (t in traits_WIN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_WIN21"]],
+                              H_data = AEM_list_sc4.2,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment but with the newly build column-joined relationship matrix 
+  results_PTWIN21_cjH_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTWIN21_cjH_per_trait, 
+     file = "../results/H-BLUP/PTWIN21_x_cjH_new.Rda")
+
+
+```
+
+
+
+### PTGRAN20 x cjH
+
+```{r}
+
+
+results_PTGRAN20_cjH_per_trait <- list()
+  
+for (t in traits_GRAN20) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN20"]],
+                              H_data = AEM_list_sc4.2,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment but with the newly build column-joined relationship matrix 
+  results_PTGRAN20_cjH_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN20_cjH_per_trait, 
+     file = "../results/H-BLUP/PTGRAN20_x_cjH_new.Rda")
+
+
+```
+
+
+
+### PTGRAN21 x cjH
+
+```{r}
+
+
+results_PTGRAN21_cjH_per_trait <- list()
+  
+for (t in traits_GRAN21) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = PT_AEM_list_sc1[["PT_GRAN21"]],
+                              H_data = AEM_list_sc4.2,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment but with the newly build column-joined relationship matrix 
+  results_PTGRAN21_cjH_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTGRAN21_cjH_per_trait, 
+     file = "../results/H-BLUP/PTGRAN21_x_cjH_new.Rda")
+
+
+```
+
+
+## AEM ENV
+
+### PTAEM x cjH
+
+```{r}
+
+results_PTAEM_cjH_per_trait <- list()
+  
+for (t in traits_PTAEM) {
+  
+  print(paste("calculating", t, "..."))
+  
+  # Prepare the data for H-BLUP cv for all traits available for the PT environment one at a time
+  df <- data_wrangling_for_cv(PT_data = AEM_list_sc3,
+                              H_data = AEM_list_sc4.2,
+                              trait = t) #t
+  
+  # Do the 5 fold 25 repititions cv H-BLUP for every trait of the PT_data environment
+  results_PTAEM_cjH_per_trait[[t]] <- cv(phenotype_data = df$PT_data,
+                                                H_data = df$H_matrix,
+                                                folds = 5,
+                                                relationship_matrix = df$H,
+                                                trait = df$trait_column,
+                                                repeats = 25)
+  
+  
+  
+  
+}
+
+
+save(results_PTAEM_cjH_per_trait, 
+     file = "../results/H-BLUP/PTAEM_x_cjH_new.Rda")
+
+
+
+
+```
+
+
+
+

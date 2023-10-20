@@ -1,0 +1,920 @@
+---
+title: "Heritability"
+author: "Alessio Maggiorelli"
+output: pdf_document
+---
+
+```{r script description}
+
+# This script calculates heritability after Piepho and Möhring but the models to build the AEMs incorporate the Überflugsdatum as a factor
+
+```
+
+
+
+```{r TO DO} 
+
+
+```
+
+
+
+```{r questions}
+
+
+```
+
+
+
+# Setup
+
+
+```{r, setup, include=FALSE}
+
+rm(list = ls())
+
+
+
+if(Sys.info()[1] == "Windows"){
+
+  knitr::opts_knit$set(root.dir = "F:/P1/analysis/Rscripts/")
+  
+} else {
+
+  knitr::opts_knit$set(root.dir = "~/HPC/Project/P1/analysis/Rscripts")
+}
+
+
+```
+
+
+```{r}
+library(stringr)
+library(RLRsim)
+library(Rcpp)
+library(readxl)
+library(ordinal)
+library(nlme)
+library(agridat)
+library(emmeans)
+library(lme4)
+library(tidyverse)
+
+```
+
+# PT heritability
+
+## load data
+
+```{r}
+
+data <- read_csv(file = "../../data/PT_cleaneddata_expadj_AM.csv")
+
+```
+
+## preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reife, Reihe, Beet, env_com), as.factor)) 
+
+
+traits <- c("AUF",
+            "AUG",
+            "EIN",
+            "ENT",
+            "ENT.II",
+            "ERT_adj",
+            "FORM.L",
+            "FORM.Q",
+            "KNG",
+            "RFE",
+            "RHI",
+            "SCH",
+            "SCO",
+            "STAE",
+            "PPO",
+            "SFL",
+            "KON",
+            "GES",
+            "GRA",
+            #"U.pop",
+            "U.pop_root",
+            "N.pop",
+            "UE.pop")
+
+```
+
+
+
+
+## Model selection
+
+```{r}
+
+# This is how it works:
+
+# # the null model, the model without the random effect we want to test
+# m0 <- lmer(RFE ~ Reife + (1|G) + (1|Block) + (1|Reihe), PT_data21_WIN)
+# 
+# # the alternative model, the model with the random effect we want to test
+# mA <- lmer(RFE ~ Reife + (1|G) + (1|Block) + (1|Reihe) + (1|Block:Beet), PT_data21_WIN)
+# 
+# # the m model, the model with all fixed effects and just the random effect being tested.
+# m  <- lmer(RFE ~ Reife + (1|Block:Beet), PT_data21_WIN)
+# 
+# # summary(m0)
+# # summary(mA)
+# # summary(m)
+# 
+# # if the p-value is significant that provides us with evidence that the variance of the random effect we test (Beet) is different from zero. That would mean we incorporate the random Beet effect.
+# exactRLRT(m0 = m0, 
+#           mA = mA,
+#           m = m)$p.value
+
+
+
+# loop through all traits and test for the significance of the Beet effect. Build an instruction dataframe
+
+p_RAN_vector <- vector()
+p_FIX_vector <- vector()
+p_RAN <- "reset"
+p_FIX <- "reset"
+
+for(i in 1:length(traits)){
+  
+  tryCatch({
+  
+    # the null model, the model without the random effect we want to test
+    m0 <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+
+    # the alternative model, the model with the random effect we want to test
+    mA <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+
+    # the m model, the model with all fixed effects and just the random effect being tested.
+    m  <- lmer(get(traits[i]) ~ (1|env_com:Block:Beet), data)
+
+    tryCatch({
+
+      p_RAN <- exactRLRT(m0 = m0,
+                mA = mA,
+                m = m)$p.value
+
+    }, error=function(e){})
+    
+    tryCatch({
+
+      if(is.character(p_RAN)){
+  
+        p_RAN <- 1
+  
+      }
+      
+    }, error=function(e){})
+
+    p_RAN_vector <- c(p_RAN_vector, p_RAN)
+
+    p_RAN <- "reset"
+    
+    rm(m0, mA, m)
+
+    tryCatch({
+    
+      # the null model, the model without the random effect we want to test
+      m0 <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+  
+      # the alternative model, the model with the random effect we want to test
+      mA <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+  
+      # the m model, the model with all fixed effects and just the random effect being tested.
+      m  <- lmer(get(traits[i]) ~ G + (1|env_com:Block:Beet), data)
+    
+    }, error=function(e){})
+  
+    
+    tryCatch({
+
+    
+      p_FIX <- exactRLRT(m0 = m0, 
+                  mA = mA,
+                  m = m)$p.value
+        
+
+    }, error=function(e){})
+      
+    tryCatch({
+    
+      if(is.character(p_FIX)){
+        
+        p_FIX <- 1
+        
+      }
+      
+    }, error=function(e){})
+    
+    p_FIX_vector <- c(p_FIX_vector, p_FIX)
+    
+    p_FIX <- "reset"
+    
+    rm(m0, mA, m)
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+  print(traits[i])
+  print(i)
+  
+}
+
+model_instruction_df <- data.frame(trait = traits,
+                 p_RAN = p_RAN_vector,
+                 p_FIX = p_FIX_vector) %>% 
+  dplyr::mutate(include_Beet_RAN = case_when(p_RAN > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE)) %>% 
+  dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE))
+
+
+
+
+```
+
+
+
+
+
+## Modelling
+
+```{r}
+
+
+fit_list_RG <- list() #random Genotype
+fit_list_FG <- list() #fixed Genotype
+
+for (i in 1:length(traits)) {
+  
+  if(model_instruction_df$include_Beet_RAN[i]){
+    
+    fit_list_RG[[i]] <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+    print(paste0("RG ", traits[i], " with Beet"))
+    
+  } else {
+    
+    fit_list_RG[[i]] <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+    print(paste0("RG ", traits[i], " without Beet"))
+    
+  }
+  
+  
+  
+  if(model_instruction_df$include_Beet_FIX[i]){
+    
+    fit_list_FG[[i]] <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+    print(paste0("FG ", traits[i], " with Beet"))
+    
+  } else {
+    
+    fit_list_FG[[i]] <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+    print(paste0("FG ", traits[i], " without Beet"))
+    
+  }
+  
+}
+
+# change the names of the list
+names(fit_list_RG) <- traits
+names(fit_list_FG) <- traits
+
+
+```
+
+
+## Variance components
+
+```{r}
+
+# calculate variance components
+
+Vv_G <- vector()
+Vv_E <- vector()
+Vv_GE <- vector()
+Vv_e <- vector()
+Vv_B <- vector()
+Vv_R <- vector()
+Vv_C <- vector()
+
+
+for(i in traits){
+  
+  Vv_G <- c(Vv_G, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "G")])
+  Vv_E <- c(Vv_E, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com")])
+  Vv_GE <- c(Vv_GE, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:G")])
+  Vv_B <- c(Vv_B, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Block")])
+  Vv_R <- c(Vv_R, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Reihe")])
+  Vv_C <- c(Vv_C, ifelse("env_com:Block:Beet" %in% as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp,
+    as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Block:Beet")],
+    NA_real_))
+  Vv_e <- c(Vv_e, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Residual")])
+  
+}
+
+
+
+
+```
+
+
+## emmeans
+
+```{r}
+source("./quick_AEM/main_function.R")
+
+
+AEM_FG_list <- list()
+
+for(i in 1:length(fit_list_FG)){
+  
+  AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")
+  
+}
+
+
+AEM_RG_list <- list()
+
+for(i in 1:length(fit_list_RG)){
+  
+  AEM_RG_list[[i]] <- AEM.fun(fit = fit_list_RG[[i]], select.name = "G")
+  
+}
+
+
+# obtain error variances
+errorvar_FG <- vector()
+
+for (i in 1:length(AEM_FG_list)) {
+  
+  errorvar_FG <- c(errorvar_FG, AEM_FG_list[[i]]$contrast.var.mean/2)
+  
+}
+
+
+
+
+# heritability calculation
+
+h2 <- vector()
+
+for(i in 1:length(traits)){
+  
+  h2 <- c(h2, Vv_G[[i]]/(Vv_G[[i]] + errorvar_FG[i]))
+  
+}
+
+```
+
+## save h2 and varcor
+
+```{r}
+
+df2 <- data.frame(traits, Vv_G, Vv_E, Vv_GE, Vv_B, Vv_R, Vv_C, Vv_e, h2) %>% 
+  mutate(across(Vv_G:h2, round, 2))
+
+
+write.csv(df2, "../../analysis/results/heritability/PT_heritability.csv")
+
+```
+
+
+```{r}
+
+```
+
+
+
+
+# Channel heritability
+
+## load data
+
+```{r}
+
+data <- read_csv(file = "../../data/UAV/NIRS_Data_PMMimp_after_PCoA.csv")
+
+```
+
+## preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reife, Reihe, Beet, env_com), as.factor)) 
+
+
+#heritability for multispectral data will be computed on th imputed data (affects three channels)
+
+traits <- data %>% 
+  dplyr::select(X530nm_MEAN.D2_imp:X570nm_MEAN.D4_imp) %>% 
+  names() %>% as.vector()
+
+```
+
+
+
+
+## Model selection
+
+```{r}
+
+# loop through all traits and test for the significance of the Beet effect. Build an instruction dataframe
+
+p_RAN_vector <- vector()
+p_FIX_vector <- vector()
+p_RAN <- "reset"
+p_FIX <- "reset"
+
+for(i in 1:length(traits)){
+  
+  tryCatch({
+  
+    # the null model, the model without the random effect we want to test
+    m0 <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+
+    # the alternative model, the model with the random effect we want to test
+    mA <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+
+    # the m model, the model with all fixed effects and just the random effect being tested.
+    m  <- lmer(get(traits[i]) ~ (1|env_com:Block:Beet), data)
+
+    tryCatch({
+
+      p_RAN <- exactRLRT(m0 = m0,
+                mA = mA,
+                m = m)$p.value
+
+    }, error=function(e){})
+    
+    tryCatch({
+
+      if(is.character(p_RAN)){
+  
+        p_RAN <- 1
+  
+      }
+      
+    }, error=function(e){})
+
+    p_RAN_vector <- c(p_RAN_vector, p_RAN)
+
+    p_RAN <- "reset"
+    
+    rm(m0, mA, m)
+
+    tryCatch({
+    
+      # the null model, the model without the random effect we want to test
+      m0 <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+  
+      # the alternative model, the model with the random effect we want to test
+      mA <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+  
+      # the m model, the model with all fixed effects and just the random effect being tested.
+      m  <- lmer(get(traits[i]) ~ G + (1|env_com:Block:Beet), data)
+    
+    }, error=function(e){})
+  
+    
+    tryCatch({
+
+    
+      p_FIX <- exactRLRT(m0 = m0, 
+                  mA = mA,
+                  m = m)$p.value
+        
+
+    }, error=function(e){})
+      
+    tryCatch({
+    
+      if(is.character(p_FIX)){
+        
+        p_FIX <- 1
+        
+      }
+      
+    }, error=function(e){})
+    
+    p_FIX_vector <- c(p_FIX_vector, p_FIX)
+    
+    p_FIX <- "reset"
+    
+    rm(m0, mA, m)
+    
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+  print(traits[i])
+  print(i)
+  
+}
+
+model_instruction_df <- data.frame(trait = traits,
+                 p_RAN = p_RAN_vector,
+                 p_FIX = p_FIX_vector) %>% 
+  dplyr::mutate(include_Beet_RAN = case_when(p_RAN > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE)) %>% 
+  dplyr::mutate(include_Beet_FIX = case_when(p_FIX > 0.05 ~ FALSE,
+                                             TRUE ~ TRUE))
+
+
+```
+
+
+
+
+
+## Modelling
+
+```{r}
+
+
+fit_list_RG <- list() #random Genotype
+fit_list_FG <- list() #fixed Genotype
+
+for (i in 1:length(traits)) {
+  
+  if(model_instruction_df$include_Beet_RAN[i]){
+    
+    fit_list_RG[[i]] <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+    print(paste0("RG ", traits[i], " with Beet"))
+    
+  } else {
+    
+    fit_list_RG[[i]] <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+    print(paste0("RG ", traits[i], " without Beet"))
+    
+  }
+  
+  
+  
+  if(model_instruction_df$include_Beet_FIX[i]){
+    
+    fit_list_FG[[i]] <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Block:Beet), data)
+    print(paste0("FG ", traits[i], " with Beet"))
+    
+  } else {
+    
+    fit_list_FG[[i]] <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe), data)
+    print(paste0("FG ", traits[i], " without Beet"))
+    
+  }
+  
+}
+
+# change the names of the list
+names(fit_list_RG) <- traits
+names(fit_list_FG) <- traits
+
+
+```
+
+
+## Variance components
+
+```{r}
+
+# calculate variance components
+
+# Vv_G <- vector()
+# Vv_E <- vector()
+# Vv_GE <- vector()
+# Vv_e <- vector()
+# Vv_B <- vector()
+# 
+# 
+# for(i in traits){
+#   
+#   Vv_G <- c(Vv_G, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[2])
+#   Vv_E <- c(Vv_E, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[4])
+#   Vv_GE <- c(Vv_GE, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[1])
+#   Vv_B <- c(Vv_B, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[3])
+#   Vv_e <- c(Vv_e, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[5])
+#   
+# }
+
+
+
+
+Vv_G <- vector()
+Vv_E <- vector()
+Vv_GE <- vector()
+Vv_e <- vector()
+Vv_B <- vector()
+Vv_R <- vector()
+Vv_C <- vector()
+
+
+for(i in traits){
+  
+  Vv_G <- c(Vv_G, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "G")])
+  Vv_E <- c(Vv_E, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com")])
+  Vv_GE <- c(Vv_GE, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:G")])
+  Vv_B <- c(Vv_B, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Block")])
+  Vv_R <- c(Vv_R, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Reihe")])
+  Vv_C <- c(Vv_C, ifelse("env_com:Block:Beet" %in% as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp,
+    as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Block:Beet")],
+    NA_real_))
+  Vv_e <- c(Vv_e, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Residual")])
+  
+}
+
+
+```
+
+
+## emmeans
+
+```{r}
+source("./quick_AEM/main_function.R")
+
+
+AEM_FG_list <- list()
+
+for(i in 1:length(fit_list_FG)){
+  
+  AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")
+  
+}
+
+
+AEM_RG_list <- list()
+
+for(i in 1:length(fit_list_RG)){
+  
+  AEM_RG_list[[i]] <- AEM.fun(fit = fit_list_RG[[i]], select.name = "G")
+  
+}
+
+
+# obtain error variances
+errorvar_FG <- vector()
+
+for (i in 1:length(AEM_FG_list)) {
+  
+  errorvar_FG <- c(errorvar_FG, AEM_FG_list[[i]]$contrast.var.mean/2)
+  
+}
+
+
+
+
+# heritability calculation
+
+h2 <- vector()
+
+for(i in 1:length(traits)){
+  
+  h2 <- c(h2, Vv_G[[i]]/(Vv_G[[i]] + errorvar_FG[i]))
+  
+}
+
+```
+
+## save h2 and varcor
+
+```{r}
+
+df2 <- data.frame(traits, Vv_G, Vv_E, Vv_GE, Vv_B, Vv_R, Vv_C, Vv_e, h2) %>% 
+  mutate(across(Vv_G:h2, round, 2))
+
+
+
+write.csv(df2, "../../analysis/results/heritability/NIRS_heritability.csv")
+
+```
+
+
+
+
+# Channel heritability D effect
+
+## load data
+
+```{r}
+
+#Before I calculated the heritability of every channel and flight day combination. Here I will just calculate the heritabilities of the channels by incorporating the flight days in the models to calculate the AEMs
+
+# We want to understand what effect the Überflugsdatum has on a given channel reflectance. That includes all interaction effects the Überflugsdatum can have with each other factor in the full model. For this we do a model with every interaction effect and see the results.
+
+data <- read_csv(file = "../../data/UAV/NIRS_Data_PMMimp_after_PCoA.csv")
+
+```
+
+## preliminary data wrangling
+
+```{r}
+data <- data %>% 
+  # pivot table so that the überflugsdatum can be a factor in the model
+  pivot_longer(cols = matches("X[0-9][0-9][0-9]nm_MEAN.D[0-9]_imp"),
+             names_to = c(".value",'groupid'),
+             names_pattern = "(X[0-9][0-9][0-9]nm_MEAN.)(D[0-9]_imp)") %>% 
+  dplyr::select(Beet,
+                Reihe,
+                G,
+                env_com,
+                Reife,
+                Block,
+                "Ueberflugsdatum" = groupid,
+                X530nm_MEAN.:X570nm_MEAN.) %>% 
+  # transform into factor
+  dplyr::mutate(across(c(G, Block, Reife, Reihe, Beet, env_com, Ueberflugsdatum), as.factor)) 
+
+
+
+traits <- data %>% 
+  dplyr::select(X530nm_MEAN.:X570nm_MEAN.) %>% 
+  names() %>% as.vector()
+
+
+```
+
+
+## Modelling
+
+```{r}
+
+
+fit_list_RG <- list() #random Genotype
+fit_list_FG <- list() #fixed Genotype
+
+for (i in 1:length(traits)) {
+
+  fit_list_RG[[i]] <- lmer(get(traits[i]) ~ (1|G) + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Beet) + (1|Ueberflugsdatum) + (1|Ueberflugsdatum:env_com) + (1|Ueberflugsdatum:G) + (1|Ueberflugsdatum:env_com:G) + (1|Ueberflugsdatum:env_com:Block) + (1|Ueberflugsdatum:env_com:Reihe) + (1|Ueberflugsdatum:env_com:Beet), data)
+  print(paste0("RG ", traits[i]))
+    
+  fit_list_FG[[i]] <- lmer(get(traits[i]) ~ G + (1|env_com) + (1|env_com:G) + (1|env_com:Block) + (1|env_com:Reihe) + (1|env_com:Beet) + (1|Ueberflugsdatum) + (1|Ueberflugsdatum:env_com) + (1|Ueberflugsdatum:G) + (1|Ueberflugsdatum:env_com:G) + (1|Ueberflugsdatum:env_com:Block) + (1|Ueberflugsdatum:env_com:Reihe) + (1|Ueberflugsdatum:env_com:Beet), data)
+    print(paste0("FG ", traits[i]))
+  
+}
+
+# change the names of the list
+names(fit_list_RG) <- traits
+names(fit_list_FG) <- traits
+
+
+```
+
+
+
+
+
+## Variance components
+
+```{r}
+
+# calculate variance components
+
+Vv_G <- vector()
+Vv_E <- vector()
+Vv_GE <- vector()
+Vv_e <- vector()
+Vv_B <- vector()
+Vv_R <- vector()
+Vv_C <- vector()
+Vv_F <- vector()
+Vv_FE <- vector()
+Vv_FG <- vector()
+Vv_FEG <- vector()
+Vv_FB <- vector()
+Vv_FR <- vector()
+Vv_FC <- vector()
+
+
+for(i in traits){
+  
+  Vv_G <- c(Vv_G, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "G")])
+  
+  Vv_E <- c(Vv_E, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com")])
+  
+  Vv_GE <- c(Vv_GE, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:G")])
+  
+  Vv_B <- c(Vv_B, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Block")])
+  
+  Vv_R <- c(Vv_R, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Reihe")])
+  
+  Vv_C <- c(Vv_C, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "env_com:Beet")])
+  
+  Vv_F <- c(Vv_F, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Ueberflugsdatum")])
+  
+  Vv_FE <- c(Vv_FE, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Ueberflugsdatum:env_com")])
+  
+  Vv_FG <- c(Vv_FG, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Ueberflugsdatum:G")])
+  
+  Vv_FEG <- c(Vv_FEG, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Ueberflugsdatum:env_com:G")])
+  
+  Vv_FB <- c(Vv_FB, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Ueberflugsdatum:env_com:Block")])
+  
+  Vv_FR <- c(Vv_FR, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Ueberflugsdatum:env_com:Reihe")])
+  
+  Vv_FC <- c(Vv_FC, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Ueberflugsdatum:env_com:Beet")])
+  
+  Vv_e <- c(Vv_e, as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$vcov[which(as.data.frame(lme4::VarCorr(fit_list_RG[[i]]))$grp == "Residual")])
+  
+}
+
+
+data.frame(Vv_G,
+           Vv_E, 
+           Vv_GE,
+           Vv_e,
+           Vv_B, 
+           Vv_R, 
+           Vv_C, 
+           Vv_F, 
+           Vv_FE,
+           Vv_FG,
+           Vv_FEG,
+           Vv_FB,
+           Vv_FR,
+           Vv_FC)
+
+```
+
+
+## emmeans
+
+```{r}
+source("./quick_AEM/main_function.R")
+
+
+AEM_FG_list <- list()
+
+for(i in 1:length(fit_list_FG)){
+  
+  AEM_FG_list[[i]] <- AEM.fun(fit = fit_list_FG[[i]], select.name = "G")
+  
+}
+
+
+AEM_RG_list <- list()
+
+for(i in 1:length(fit_list_RG)){
+  
+  AEM_RG_list[[i]] <- AEM.fun(fit = fit_list_RG[[i]], select.name = "G")
+  
+}
+
+
+# obtain error variances
+errorvar_FG <- vector()
+
+for (i in 1:length(AEM_FG_list)) {
+  
+  errorvar_FG <- c(errorvar_FG, AEM_FG_list[[i]]$contrast.var.mean/2)
+  
+}
+
+
+
+
+# heritability calculation
+
+h2 <- vector()
+
+for(i in 1:length(traits)){
+  
+  h2 <- c(h2, Vv_G[[i]]/(Vv_G[[i]] + errorvar_FG[i]))
+  
+}
+
+```
+
+## save h2 and varcor
+
+```{r}
+
+df2 <- data.frame(traits,
+                  Vv_G,
+                  Vv_E, 
+                  Vv_GE,
+                  Vv_e,
+                  Vv_B, 
+                  Vv_R, 
+                  Vv_C, 
+                  Vv_F, 
+                  Vv_FE,
+                  Vv_FG,
+                  Vv_FEG,
+                  Vv_FB,
+                  Vv_FR,
+                  Vv_FC,
+                  h2) %>% 
+  mutate(across(Vv_G:h2, round, 2))
+
+
+write.csv(df2, "../../analysis/results/heritability/NIRS_heritability_flight_date.csv")
+
+```
+
+
+```{r}
+
+```
